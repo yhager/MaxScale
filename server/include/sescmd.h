@@ -41,8 +41,6 @@
 #include <mysql_client_server_protocol.h>
 #include <openssl/sha.h>
 
-#define PEARSON_DIGEST_LEN 16
-
 /** 
  * Minimum number of backend servers that must respond. If less than this value
  * of backend servers respond, it is considered a failure and the session should

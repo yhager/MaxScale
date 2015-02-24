@@ -3551,7 +3551,7 @@ static bool route_session_write(
          * Add the command to the list of session commands.
          */
         sescmd_add_command(router_cli_ses->rses_sescmd_list,querybuf);
-        
+        gwbuf_free(querybuf);
 	/**
 	 * Execute the command in each of the backend servers unless they are already
 	 * executing session commands. 

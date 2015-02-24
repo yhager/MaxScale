@@ -14,6 +14,7 @@
 #include "skygw_debug.h"
 
 #define DISKWRITE_LATENCY (5*MSEC_USEC)
+#define PEARSON_DIGEST_LEN 16
 
 typedef struct slist_node_st    slist_node_t;
 typedef struct slist_st         slist_t;
@@ -199,6 +200,7 @@ char* replace_literal(char* haystack,
                       const char* needle, 
                       const char* replacement);
 bool is_valid_posix_path(char* path);
+void skygw_pearson(const unsigned char *x, size_t len, char *hex);
 EXTERN_C_BLOCK_END
 
 #endif /* SKYGW_UTILS_H */
