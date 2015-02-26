@@ -44,13 +44,16 @@ macro(set_variables)
 
   # password of MaxScale user
   set(TEST_PASSWORD "maxpwd" CACHE STRING "password of MaxScale user")
-  
+
   # Use static version of libmysqld
   set(STATIC_EMBEDDED TRUE CACHE BOOL "Use static version of libmysqld")
-  
+
   # Build RabbitMQ components
   set(BUILD_RABBITMQ FALSE CACHE BOOL "Build RabbitMQ components")
-  
+
+  # Build the binlog router
+  set(BUILD_BINLOG TRUE CACHE BOOL "Build binlog router")
+
   # Use gcov build flags
   set(GCOV FALSE CACHE BOOL "Use gcov build flags")
 

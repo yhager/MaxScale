@@ -777,6 +777,17 @@ char		*ptr;
 int		length, rval, residual = 0;
 GWBUF		*clone = NULL;
 unsigned char   command = *((unsigned char*)queue->start + 4);
+
+spinlock_acquire(&my_session->tee_lock);
+
+if(!my_session->active)
+{
+    skygw_log_write(LOGFILE_TRACE, "Tee: Received a reply when the session was closed.");
+    gwbuf_free(queue);
+    rval = 0;
+    goto retblock;
+}
+
 	if (my_session->branch_session && 
 		my_session->branch_session->state == SESSION_STATE_ROUTER_READY)
 	{
@@ -813,10 +824,11 @@ unsigned char   command = *((unsigned char*)queue->start + 4);
 			clone = gwbuf_clone_all(queue);
 		}
 	}
+
+	spinlock_release(&my_session->tee_lock);
+
 	/* Pass the query downstream */
-        
-        ss_dassert(my_session->tee_replybuf == NULL);
-        
+
         switch(command)
         {
         case 0x03:
@@ -850,6 +862,15 @@ unsigned char   command = *((unsigned char*)queue->start + 4);
         }
 	spinlock_release(&debug_lock);
 #endif
+	spinlock_acquire(&my_session->tee_lock);
+
+	if(my_session->branch_session == NULL ||
+		my_session->branch_session->state != SESSION_STATE_ROUTER_READY)
+	{
+	    rval = 0;
+	    my_session->active = 0;
+	    goto retblock;
+	}
         rval = my_session->down.routeQuery(my_session->down.instance,
 						my_session->down.session, 
 						queue);
@@ -865,9 +886,10 @@ unsigned char   command = *((unsigned char*)queue->start + 4);
 		{
 			/** Close tee session */
 			my_session->active = 0;
+			rval = 0;
 			LOGIF(LT, (skygw_log_write(
 				LOGFILE_TRACE,
-				"Closed tee filter session.")));
+				"Closed tee filter session: Child session in invalid state.")));
 			gwbuf_free(clone);
 		}		
 	}
@@ -877,12 +899,14 @@ unsigned char   command = *((unsigned char*)queue->start + 4);
 		{
 			LOGIF(LT, (skygw_log_write(
 				LOGFILE_TRACE,
-				"Closed tee filter session.")));
+				"Closed tee filter session: Child session is NULL.")));
 			my_session->active = 0;
+			rval = 0;
 		}
 		my_session->n_rejected++;
 	}
-        
+        retblock:
+	    spinlock_release(&my_session->tee_lock);
 	return rval;
 }
 
@@ -908,7 +932,20 @@ clientReply (FILTER* instance, void *session, GWBUF *reply)
   
   spinlock_acquire(&my_session->tee_lock);
 
-  ss_dassert(my_session->active);
+  if(!my_session->active)
+  {
+      gwbuf_free(reply);
+      rc = 0;
+      if(my_session->waiting[PARENT])
+      {
+	  GWBUF* errbuf = modutil_create_mysql_err_msg(1,0,1,"0000","Session closed.");
+	  my_session->waiting[PARENT] = false;
+	  my_session->up.clientReply (my_session->up.instance,
+				       my_session->up.session,
+				       errbuf);
+      }
+      goto retblock;
+  }
 
   branch = instance == NULL ? CHILD : PARENT;
 
@@ -1049,10 +1086,11 @@ clientReply (FILTER* instance, void *session, GWBUF *reply)
 				       my_session->tee_replybuf);
       my_session->tee_replybuf = NULL;
     }
-	
+  retblock:
   spinlock_release(&my_session->tee_lock);
   return rc;
-} 
+}
+
 /**
  * Diagnostics routine
  *

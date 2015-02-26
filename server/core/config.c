@@ -40,6 +40,7 @@
  *					internal router suppression of messages
  * 30/10/14	Massimiliano Pinto	Added disable_master_failback parameter
  * 07/11/14	Massimiliano Pinto	Addition of monitor timeouts for connect/read/write
+ * 20/02/15	Markus Mäkelä		Added connection_timeout parameter for services
  *
  * @endverbatim
  */
@@ -71,7 +72,6 @@ static	char 	*config_get_value(CONFIG_PARAMETER *, const char *);
 static	int	handle_global_item(const char *, const char *);
 static	void	global_defaults();
 static	void	check_config_objects(CONFIG_CONTEXT *context);
-static	int	config_truth_value(char *str);
 static int	internalService(char *router);
 
 static	char		*config_file = NULL;
@@ -279,6 +279,7 @@ int			error_count = 0;
 				char *user;
 				char *auth;
 				char *enable_root_user;
+				char *connection_timeout;
 				char *weightby;
 				char *version_string;
 				bool  is_rwsplit = false;
@@ -289,6 +290,9 @@ int			error_count = 0;
 				enable_root_user = config_get_value(
 							obj->parameters, 
 							"enable_root_user");
+				connection_timeout = config_get_value(
+							obj->parameters, 
+							"connection_timeout");
 				weightby = config_get_value(obj->parameters, "weightby");
 			
 				version_string = config_get_value(obj->parameters, 
@@ -333,6 +337,11 @@ int			error_count = 0;
 					serviceEnableRootUser(
                                                 obj->element, 
                                                 config_truth_value(enable_root_user));
+				if (connection_timeout)
+					serviceSetTimeout(
+                                                obj->element, 
+                                                atoi(connection_timeout));
+				
 				if (weightby)
 					serviceWeightBy(obj->element, weightby);
 
@@ -1210,6 +1219,10 @@ int i;
 	{
 		gateway.pollsleep = atoi(value);
         }
+	else if (strcmp(name, "ms_timestamp") == 0)
+	{
+	    skygw_set_highp(atoi(value));
+        }
 	else
 	{
 		for (i = 0; lognames[i].logname; i++)
@@ -1282,13 +1295,15 @@ SERVER			*server;
                                         char *user;
 					char *auth;
 					char *enable_root_user;
+					char *connection_timeout;
                                         char* max_slave_conn_str;
                                         char* max_slave_rlag_str;
 					char *version_string;
 					char *allow_localhost_match_wildcard_host;
 
 					enable_root_user = config_get_value(obj->parameters, "enable_root_user");
-
+					connection_timeout = config_get_value(obj->parameters, "connection_timeout");
+					
                                         user = config_get_value(obj->parameters,
                                                                 "user");
 					auth = config_get_value(obj->parameters,
@@ -1311,6 +1326,8 @@ SERVER			*server;
                                                                auth);
 						if (enable_root_user)
 							serviceEnableRootUser(service, atoi(enable_root_user));
+						if (connection_timeout)
+							serviceSetTimeout(service, atoi(connection_timeout));
 
 						if (allow_localhost_match_wildcard_host)
 							serviceEnableLocalhostMatchWildcardHost(
@@ -1416,11 +1433,17 @@ SERVER			*server;
                                         char *user;
 					char *auth;
 					char *enable_root_user;
+					char *connection_timeout;
 					char *allow_localhost_match_wildcard_host;
 
 					enable_root_user = 
                                                 config_get_value(obj->parameters, 
                                                                  "enable_root_user");
+					
+					connection_timeout = 
+                                                config_get_value(obj->parameters, 
+                                                                 "connection_timeout");
+					
 					allow_localhost_match_wildcard_host = 
 						config_get_value(obj->parameters, "localhost_match_wildcard_host");
 
@@ -1438,6 +1461,9 @@ SERVER			*server;
                                                                auth);
 						if (enable_root_user)
 							serviceEnableRootUser(obj->element, atoi(enable_root_user));
+
+						if (connection_timeout)
+							serviceSetTimeout(obj->element, atoi(connection_timeout));
 
 						if (allow_localhost_match_wildcard_host)
 							serviceEnableLocalhostMatchWildcardHost(
@@ -1662,6 +1688,7 @@ static char *service_params[] =
                 "user",
                 "passwd",
 		"enable_root_user",
+		"connection_timeout",
 		"localhost_match_wildcard_host",
                 "max_slave_connections",
                 "max_slave_replication_lag",
@@ -1807,14 +1834,14 @@ bool config_set_qualified_param(
  * @param	str	String to convert to a boolean
  * @return	Truth value
  */
-static int
+int
 config_truth_value(char *str)
 {
-	if (strcasecmp(str, "true") == 0 || strcasecmp(str, "on") == 0)
+	if (strcasecmp(str, "true") == 0 || strcasecmp(str, "on") == 0 || strcasecmp(str, "yes") == 0)
 	{
 		return 1;
 	}
-	if (strcasecmp(str, "false") == 0 || strcasecmp(str, "off") == 0)
+	if (strcasecmp(str, "false") == 0 || strcasecmp(str, "off") == 0 || strcasecmp(str, "no") == 0)
 	{
 		return 0;
 	}

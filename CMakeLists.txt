@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 2.8.12)
 message(STATUS "CMake version: ${CMAKE_VERSION}")
 
 include(macros.cmake)
@@ -40,14 +40,20 @@ configure_file(${CMAKE_SOURCE_DIR}/server/test/maxscale_test.h.in ${CMAKE_BINARY
 configure_file(${CMAKE_SOURCE_DIR}/etc/postinst.in ${CMAKE_BINARY_DIR}/postinst)
 configure_file(${CMAKE_SOURCE_DIR}/etc/postrm.in ${CMAKE_BINARY_DIR}/postrm)
 
-set(CMAKE_C_FLAGS "-Wall -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -fPIC")
-set(CMAKE_CXX_FLAGS "-Wall -Wno-unused-variable -Wno-unused-but-set-variable -fPIC")
+set(CMAKE_C_FLAGS "-Wall -Wno-unused-variable -Wno-unused-function -fPIC")
+set(CMAKE_CXX_FLAGS "-Wall -Wno-unused-variable -Wno-unused-function -fPIC")
 set(DEBUG_FLAGS "-ggdb -pthread -pipe -Wformat -fstack-protector --param=ssp-buffer-size=4")
 
 if(CMAKE_VERSION VERSION_GREATER 2.6)
   if((CMAKE_C_COMPILER_ID STREQUAL "GNU") AND (NOT (CMAKE_C_COMPILER_VERSION VERSION_LESS 4.2)))
     message(STATUS "C Compiler supports: -Werror=format-security")
     set(DEBUG_FLAGS "${DEBUG_FLAGS} -Werror=format-security")
+  endif()
+
+  if((CMAKE_C_COMPILER_ID STREQUAL "GNU") AND (NOT (CMAKE_C_COMPILER_VERSION VERSION_LESS 4.6)))
+    message(STATUS "C Compiler supports: -Wno-unused-but-set-variable")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-but-set-variable ")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-but-set-variable ")
   endif()
 endif()
 
@@ -131,7 +137,10 @@ if( NOT ( (DEFINED INSTALL_SYSTEM_FILES) AND ( NOT ( INSTALL_SYSTEM_FILES ) ) ) 
   else()
     configure_file(${CMAKE_SOURCE_DIR}/etc/init.d/maxscale.in ${CMAKE_BINARY_DIR}/maxscale @ONLY)    
   endif()
-  if(NOT PACKAGE)
+  if(PACKAGE)
+    message(STATUS "maxscale.conf will unpack to: /etc/ld.so.conf.d")
+    message(STATUS "startup scripts will unpack to to: /etc/init.d")
+  else()
   install(FILES ${CMAKE_BINARY_DIR}/maxscale DESTINATION /etc/init.d 
     PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
   install(FILES ${CMAKE_BINARY_DIR}/maxscale.conf DESTINATION /etc/ld.so.conf.d 
@@ -256,3 +265,8 @@ add_custom_target(generate_html
   -DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH} 
   -P generate-html.cmake
   COMMENT "Generating HTML files" VERBATIM) 
+
+if(PACKAGE)
+  message(STATUS "You can install startup scripts and system configuration files for MaxScale by running the 'postinst' shell script located at ${CMAKE_INSTALL_PREFIX}.")
+  message(STATUS "To remove these installed files, run the 'postrm' shell script located in the same folder.")
+endif()

@@ -632,7 +632,8 @@ static bool resolve_maxscale_homedir(
          * 3. if /etc/MaxScale/MaxScale.cnf didn't exist or wasn't accessible, home
          *    isn't specified. Thus, try to access $PWD/MaxScale.cnf .
          */
-        tmp = strndup(getenv("PWD"), PATH_MAX);
+	char *pwd = getenv("PWD");
+        tmp = strndup(pwd ? pwd : "PWD_NOT_SET", PATH_MAX);
         tmp2 = get_expanded_pathname(p_home_dir, tmp, default_cnf_fname);
 	free(tmp2); /*< full path isn't needed so simply free it */
 	
@@ -991,7 +992,7 @@ static void usage(void)
                 "  -f|--config=...   relative|absolute pathname of MaxScale configuration file\n"
 		"                    (default: $MAXSCALE_HOME/etc/MaxScale.cnf)\n"
 		"  -l|--log=...      log to file or shared memory\n"
-		"                    -lfile or -lshm - defaults to file\n"
+		"                    -lfile or -lshm - defaults to shared memory\n"
 		"  -v|--version      print version info and exit\n"
                 "  -?|--help         show this help\n"
 		, progname);
@@ -1053,7 +1054,7 @@ int main(int argc, char **argv)
         char*    cnf_file_arg = NULL;         /*< conf filename from cmd-line arg */
         void*    log_flush_thr = NULL;
 	int      option_index;
-	int	 logtofile = 1;	      	      /* Use shared memory or file */
+	int	 logtofile = 0;	      	      /* Use shared memory or file */
         ssize_t  log_flush_timeout_ms = 0;
         sigset_t sigset;
         sigset_t sigpipe_mask;

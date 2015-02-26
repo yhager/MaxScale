@@ -447,7 +447,7 @@ static int gw_read_backend_event(DCB *dcb) {
 
                 /* read available backend data */
                 rc = dcb_read(dcb, &read_buffer);
-                
+
                 if (rc < 0) 
                 {
                         GWBUF* errbuf;
@@ -623,9 +623,14 @@ static int gw_write_backend_event(DCB *dcb) {
                 if (dcb->writeq != NULL)
                 {
                         data = (uint8_t *)GWBUF_DATA(dcb->writeq);
-                        
-                        if (!(MYSQL_IS_COM_QUIT(data)))
+
+			if(dcb->session->client == NULL)
+			{
+				rc = 0;
+			}
+                        else if (!(MYSQL_IS_COM_QUIT(data)))
                         {
+
                                 /*< vraa : errorHandle */
                                 mysql_send_custom_error(
                                         dcb->session->client,

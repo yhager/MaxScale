@@ -4,7 +4,9 @@
 
 ## About MaxScale
 
+ - [About MaxScale](About/About-MaxScale.md)
  - [Release Notes 1.0.4](About/MaxScale-1.0.4-Release-Notes.md)
+ - [Changelog](Changelog.md)
  - [Limitations](About/Limitations.md)
  - [COPYRIGHT](About/COPYRIGHT.md)
  - [LICENSE](About/LICENSE.md)
@@ -13,6 +15,7 @@
 ## Getting Started
 
  - [Getting Started with MaxScale](Getting-Started/Getting-Started-With-MaxScale.md)
+ - [Building MaxScale from Source Code](Getting-Started/Building-MaxScale-from-Source-Code.md)
  - [Configuration Guide](Getting-Started/Configuration-Guide.md)
 
 ## Reference
@@ -49,7 +52,8 @@
 
 ## Design Documents
 
- - [Session Commands design (in development)](http://mariadb-corporation.github.io/MaxScale/Design-Documents/)
+ - [Core Objects Design (in development)](http://mariadb-corporation.github.io/MaxScale/Design-Documents/core-objects-html-docs)
+ - [Binlog Router Design (in development)](http://mariadb-corporation.github.io/MaxScale/Design-Documents/binlog-router-html-docs)
  - [DCB States (to be replaced in StarUML)](Design-Documents/DCB-States.pdf)
 
 ## Earlier Release Notes
