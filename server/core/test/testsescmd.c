@@ -41,7 +41,7 @@ int main(int argc, char** argv)
     memset(response->start + 4,0,7);
     
     printf("Allocating session command list... ");    
-    if((list = sescmd_allocate()) == NULL)
+    if((list = sescmdlist_allocate()) == NULL)
     {
         printf("Failed to allocate session command list");
         rval = 1;
@@ -50,7 +50,7 @@ int main(int argc, char** argv)
     printf("OK\n");    
     list->semantics.reply_on = SRES_FIRST;
     printf("Adding session commands to the list... ");
-    if(!sescmd_add_command(list,buffer))
+    if(!sescmdlist_add_command(list,buffer))
     {
         printf("Failed to add a command to the list\n");
         rval = 1;
@@ -59,7 +59,7 @@ int main(int argc, char** argv)
     printf("OK\n");
     
     printf("Adding a DCB to the list... ");
-    if(!sescmd_add_dcb(list,dcb))
+    if(!sescmdlist_add_dcb(list,dcb))
     {
         printf("Failed to add a dcb to the list\n");
         rval = 1;
@@ -89,7 +89,7 @@ int main(int argc, char** argv)
     printf("OK\n");
     printf("Executing command... ");
     
-    if(!sescmd_execute_in_backend(dcb,queue))
+    if(!sescmdlist_execute(dcb,queue))
     {
 	printf("Failed to execute command\n");
         rval = 1;
@@ -113,7 +113,7 @@ int main(int argc, char** argv)
 
     printf("Generating a reply to the session command... ");
     
-    if(sescmd_process_replies(list,dcb,response) == NULL)
+    if(sescmdlist_process_replies(list,dcb,&response) == NULL)
     {
         printf("Failed to process reply\n");
         rval = 1;
@@ -124,7 +124,7 @@ int main(int argc, char** argv)
 
     printf("Removing DCB... ");
     
-    if(!sescmd_remove_dcb(list,dcb))
+    if(!sescmdlist_remove_dcb(list,dcb))
     {
         printf("Removing the DCB failed\n");
         rval = 1;

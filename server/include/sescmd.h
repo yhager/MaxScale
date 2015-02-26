@@ -146,16 +146,16 @@ typedef struct sescmd_list_st
   SPINLOCK lock;
 } SCMDLIST;
 
-SCMDLIST* sescmd_allocate();
-void sescmd_free(SCMDLIST*);
-bool sescmd_add_command (SCMDLIST* list, GWBUF* buf);
-bool sescmd_add_dcb (SCMDLIST* list, DCB* dcb);
-bool sescmd_remove_dcb (SCMDLIST* list, DCB* dcb);
-bool sescmd_execute_in_backend(DCB* backend_dcb,GWBUF* buffer);
-bool sescmd_is_active(SCMDLIST* list, DCB* dcb);
+SCMDLIST* sescmdlist_allocate();
+void sescmdlist_free(SCMDLIST*);
+bool sescmdlist_add_command (SCMDLIST* list, GWBUF* buf);
+bool sescmdlist_add_dcb (SCMDLIST* list, DCB* dcb);
+bool sescmdlist_remove_dcb (SCMDLIST* list, DCB* dcb);
+bool sescmdlist_execute(DCB* backend_dcb,GWBUF* buffer);
+bool sescmdlist_is_active(SCMDLIST* list, DCB* dcb);
 bool sescmd_has_next(SCMDLIST* list, DCB* dcb);
 GWBUF* sescmd_get_next(SCMDLIST* list, DCB* dcb);
-bool sescmd_process_replies(SCMDLIST* list, DCB* dcb, GWBUF** response);
+bool sescmdlist_process_replies(SCMDLIST* list, DCB* dcb, GWBUF** response);
 bool sescmd_handle_failure(SCMDLIST* list, DCB* dcb);
 #endif	/* SESCMD_H */
 

@@ -791,7 +791,7 @@ static void* newSession(
                 goto return_rses;
         }
         
-        if((client_rses->rses_sescmd_list = sescmd_allocate()) == NULL)
+        if((client_rses->rses_sescmd_list = sescmdlist_allocate()) == NULL)
         {
             free(client_rses);
             client_rses = NULL;
@@ -880,7 +880,7 @@ static void* newSession(
 	for(i = 0;i< router_nservers;i++)
 	{
 	    
-	    sescmd_add_dcb(client_rses->rses_sescmd_list,
+	    sescmdlist_add_dcb(client_rses->rses_sescmd_list,
 		     client_rses->rses_backend_ref[i].bref_dcb);
 	}
 	
@@ -1048,7 +1048,7 @@ static void freeSession(
          * all the memory and other resources associated
          * to the client session.
          */
-        sescmd_free(router_cli_ses->rses_sescmd_list);
+        sescmdlist_free(router_cli_ses->rses_sescmd_list);
         free(router_cli_ses->rses_backend_ref);
 	free(router_cli_ses);
         return;
@@ -2589,7 +2589,7 @@ static void clientReply (
 	     * the client. 
 	     */
 	    GWBUF* ncmd;
-	    bool success = sescmd_process_replies(router_cli_ses->rses_sescmd_list, backend_dcb, &buffer);
+	    bool success = sescmdlist_process_replies(router_cli_ses->rses_sescmd_list, backend_dcb, &buffer);
 
 	    if(!success)
 	    {
@@ -2599,7 +2599,7 @@ static void clientReply (
 	    else if(sescmd_has_next(router_cli_ses->rses_sescmd_list, backend_dcb))
 	    {
 		ncmd = sescmd_get_next(router_cli_ses->rses_sescmd_list, backend_dcb);
-		sescmd_execute_in_backend(backend_dcb, ncmd);
+		sescmdlist_execute(backend_dcb, ncmd);
 	    }
 	    /** 
 	     * If response will be sent to client, decrease waiter count.
@@ -3011,12 +3011,12 @@ static bool select_connect_backend_servers(
                                                  * Start executing session command
                                                  * history.
                                                  */
-                                                sescmd_add_dcb(rses->rses_sescmd_list,backend_ref[i].bref_dcb);
+                                                sescmdlist_add_dcb(rses->rses_sescmd_list,backend_ref[i].bref_dcb);
                                                 
 						if(sescmd_has_next(rses->rses_sescmd_list,backend_ref[i].bref_dcb))
 						{
 						    GWBUF* ncmd = sescmd_get_next(rses->rses_sescmd_list,backend_ref[i].bref_dcb);
-						    sescmd_execute_in_backend(backend_ref[i].bref_dcb,ncmd);
+						    sescmdlist_execute(backend_ref[i].bref_dcb,ncmd);
 						}
                                                 /** 
 						 * Here we actually say : When this
@@ -3550,7 +3550,7 @@ static bool route_session_write(
         /** 
          * Add the command to the list of session commands.
          */
-        sescmd_add_command(router_cli_ses->rses_sescmd_list,querybuf);
+        sescmdlist_add_command(router_cli_ses->rses_sescmd_list,querybuf);
         gwbuf_free(querybuf);
 	/**
 	 * Execute the command in each of the backend servers unless they are already
@@ -3560,12 +3560,12 @@ static bool route_session_write(
 	{
 	    DCB* dcb = backend_ref[i].bref_dcb;
 	    if (BREF_IS_IN_USE(&backend_ref[i]) && 
-	     !sescmd_is_active(router_cli_ses->rses_sescmd_list,dcb))
+	     !sescmdlist_is_active(router_cli_ses->rses_sescmd_list,dcb))
 	    {
 		nbackends += 1;
 		GWBUF* ncmd = sescmd_get_next(router_cli_ses->rses_sescmd_list,dcb);
 		ss_dassert(ncmd != NULL);
-		if(sescmd_execute_in_backend(dcb,ncmd))
+		if(sescmdlist_execute(dcb,ncmd))
 		{
 		    nsucc += 1;
 		}
@@ -3753,7 +3753,7 @@ static void handleError (
 				* failed slave(s).
 				*/
 			    
-				sescmd_remove_dcb(rses->rses_sescmd_list,backend_dcb);
+				sescmdlist_remove_dcb(rses->rses_sescmd_list,backend_dcb);
 			    
 				*succp = handle_error_new_connection(inst, 
 								rses, 

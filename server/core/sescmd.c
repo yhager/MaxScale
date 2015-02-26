@@ -1,6 +1,13 @@
 #include <sescmd.h>
 
-SCMDLIST* sescmd_allocate()
+SCMD* sescmd_allocate();
+void sescmd_free(SCMD*);
+
+/**
+ * Allocate a new session command list.
+ * @return Pointer to the session command list or NULL if an error occurred.
+ */
+SCMDLIST* sescmdlist_allocate()
 {
     SCMDLIST* list;
     
@@ -21,11 +28,42 @@ SCMDLIST* sescmd_allocate()
     list->properties.on_mlen_err = DROP_FIRST;
     return list;
 }
+
 /**
- * Free the session command list
+ * Allocates a new session command.
+ * @return Pointer to the newly allocated session command or NULL if an error occurred.
+ */
+SCMD* sescmd_allocate()
+{
+SCMD* cmd;
+
+   if((cmd = calloc(1,sizeof(SCMD))) == NULL)
+   {
+       skygw_log_write(LOGFILE_ERROR,"Error : Memory allocation failed at sescmd_add_command.");
+       return NULL;
+   }
+
+   spinlock_init(&cmd->lock);
+   return cmd;
+}
+
+/**
+ * Free a session command. This frees the associated GWBUF and the session
+ * command itself.
+ * @param cmd Session command to free
+ */
+void sescmd_free(SCMD* cmd)
+{
+    gwbuf_free(cmd->buffer);
+    free(cmd);
+}
+
+/**
+ * Free the session command list. This frees all commands and cursors associated
+ * with this list.
  * @param list Session command list to free
  */
-void sescmd_free(SCMDLIST*  list)
+void sescmdlist_free(SCMDLIST*  list)
 {
     SCMDCURSOR* cursor;
     SCMD* cmd;
@@ -42,7 +80,7 @@ void sescmd_free(SCMDLIST*  list)
     {
         SCMD* tmp = cmd;
         cmd = cmd->next;
-        free(tmp);
+        sescmd_free(tmp);
     }
     
     while(cursor)
@@ -63,31 +101,29 @@ void sescmd_free(SCMDLIST*  list)
  * @param buf Buffer with the session command to add
  * @return True if adding the command was successful. False on all errors.
  */
-bool sescmd_add_command (SCMDLIST* scmdlist, GWBUF* buf)
+bool sescmdlist_add_command (SCMDLIST* scmdlist, GWBUF* buf)
 {
-   SCMDLIST* list = scmdlist;
    SCMD* cmd;
    
-   if((cmd = calloc(1,sizeof(SCMD))) == NULL)
+   if((cmd = sescmd_allocate()) == NULL)
    {
-       skygw_log_write(LOGFILE_ERROR,"Error : Memory allocation failed.");
+       skygw_log_write(LOGFILE_ERROR,"Error : Memory allocation failed at sescmd_add_command.");
        return false;
    }
    
-   spinlock_init(&cmd->lock);
    cmd->buffer = gwbuf_clone(buf);
    cmd->packet_type = *((unsigned char*)buf->start + 4);
    cmd->reply_sent = false;
    
-   if(list->first == NULL)
+   if(scmdlist->first == NULL)
    {
-       list->first = cmd;
-       list->last = cmd;
+       scmdlist->first = cmd;
+       scmdlist->last = cmd;
    }
    else
    {
-       list->last->next = cmd;
-       list->last = cmd;
+       scmdlist->last->next = cmd;
+       scmdlist->last = cmd;
    }
    
    return true;
@@ -102,16 +138,22 @@ bool sescmd_add_command (SCMDLIST* scmdlist, GWBUF* buf)
 SCMDCURSOR* get_cursor(SCMDLIST* scmdlist, DCB* dcb)
 {
     SCMDCURSOR* cursor = scmdlist->cursors;
-    
+    SCMDCURSOR* rval = NULL;
+
+    spinlock_acquire(&scmdlist->lock);
+
     while(cursor)
     {
         if(cursor->backend_dcb == dcb)
         {
-            return cursor;
+            rval = cursor;
+	    break;
         }
         cursor = cursor->next;
     }
-    return cursor;
+    spinlock_release(&scmdlist->lock);
+
+    return rval;
 }
 
 /**
@@ -165,7 +207,7 @@ sescmd_cursor_set_active(SCMDCURSOR* cursor, bool value)
  * @return True if the backend server is already executing session commands and
  * false if it is inactive 
  */
-bool sescmd_is_active(SCMDLIST* list, DCB* dcb)
+bool sescmdlist_is_active(SCMDLIST* list, DCB* dcb)
 {
     SCMDCURSOR* cursor = get_cursor(list,dcb);
     
@@ -275,7 +317,9 @@ GWBUF* sescmd_get_next(SCMDLIST* list, DCB* dcb)
     
     if(cursor->replied_to == false)
     {
-        /** The current command is still active */
+        /** The current command is still active.
+	 * Question: return NULL instead and wait for a response?
+	 */
 
         rval = sescmd_cursor_get_command(cursor);
     }
@@ -294,13 +338,13 @@ GWBUF* sescmd_get_next(SCMDLIST* list, DCB* dcb)
  * @return True if execution was successful or false if the write to the backend DCB failed.
  */
 bool
-sescmd_execute_in_backend(DCB* backend_dcb,GWBUF* buffer)
+sescmdlist_execute(DCB* backend_dcb,GWBUF* buffer)
 {
 	DCB* dcb = backend_dcb;
 	bool succp = true;
 	int rc = 0;
 	unsigned char packet_type;
-	if(dcb == NULL)
+	if(dcb == NULL || buffer == NULL)
 	    return false;
 	CHK_DCB(dcb);
 
@@ -399,7 +443,7 @@ bool check_master_reply(SCMDLIST* list, DCB* dcb)
  * @return True if the reply was processed successfully and false if the response
  * from this backend DCB was different from the others. 
  */
-bool sescmd_process_replies(
+bool sescmdlist_process_replies(
         SCMDLIST* list,
         DCB* dcb,                            
         GWBUF** rbuf)
@@ -439,14 +483,9 @@ bool sescmd_process_replies(
 			
 			*rbuf = NULL;
 
-			while (!last_packet)
+			while (replybuf && !GWBUF_IS_TYPE_RESPONSE_END(replybuf))
                         {
-                                int  buflen;
-
-                                buflen = GWBUF_LENGTH(replybuf);
-                                last_packet = GWBUF_IS_TYPE_RESPONSE_END(replybuf);
-                                /** discard packet */
-                                replybuf = gwbuf_consume(replybuf, buflen);
+			    replybuf = gwbuf_consume(replybuf, GWBUF_LENGTH(replybuf));
                         }
 
 			if(cmd->reply_type != command)
@@ -509,7 +548,7 @@ bool sescmd_process_replies(
  * @return True if adding the DCB was successful or the DCB was already in the list. 
  * False on all errors.
  */
-bool sescmd_add_dcb (SCMDLIST* scmdlist, DCB* dcb)
+bool sescmdlist_add_dcb (SCMDLIST* scmdlist, DCB* dcb)
 {
     SCMDLIST* list = scmdlist;
     SCMDCURSOR* cursor;
@@ -542,7 +581,7 @@ bool sescmd_add_dcb (SCMDLIST* scmdlist, DCB* dcb)
  * @param dcb DCB to remove
  * @return True if removing the DCB was successful. False on all errors.
  */
-bool sescmd_remove_dcb (SCMDLIST* scmdlist, DCB* dcb)
+bool sescmdlist_remove_dcb (SCMDLIST* scmdlist, DCB* dcb)
 {
     SCMDLIST* list = scmdlist;
     SCMDCURSOR *cursor, *tmp;
