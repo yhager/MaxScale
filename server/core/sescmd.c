@@ -1,4 +1,5 @@
 #include <sescmd.h>
+#include <strings.h>
 
 SCMD* sescmd_allocate();
 void sescmd_free(SCMD*);
@@ -299,7 +300,6 @@ GWBUF* sescmd_get_next(SCMDLIST* list, DCB* dcb)
         /** This is the first time this cursor is advanced */
         
         cursor->scmd_cur_cmd = cursor->scmd_list->first;
-        cursor->replied_to = false;
         rval = sescmd_cursor_get_command(cursor);
         goto retblock;
     }
@@ -310,7 +310,6 @@ GWBUF* sescmd_get_next(SCMDLIST* list, DCB* dcb)
         /** There are pending commands and the current one received a response */    
         
         cursor->scmd_cur_cmd = cursor->scmd_cur_cmd->next;
-        cursor->replied_to = false;
         rval = sescmd_cursor_get_command(cursor);
         goto retblock;
     }
@@ -332,21 +331,54 @@ GWBUF* sescmd_get_next(SCMDLIST* list, DCB* dcb)
 }
 
 /**
+ * Check if the cursor is waiting a result. If the cursor is waiting for a result,
+ * don't send additional commands until a reply has been received.
+ * @param cursor Cursor to inspect
+ * @return True if the cursor is waiting for a result. False if all sent commands
+ * have been replied.
+ */
+bool cursor_waiting_result(SCMDCURSOR* cursor)
+{
+    if(!cursor->replied_to &&
+       cursor->scmd_cur_active)
+	return true;
+
+    return false;
+}
+
+/**
  * Execute a pending session command in the backend server.
  * @param dcb Backend DCB where the command is executed
  * @param buffer GWBUF containing the session command
  * @return True if execution was successful or false if the write to the backend DCB failed.
  */
 bool
-sescmdlist_execute(DCB* backend_dcb,GWBUF* buffer)
+sescmdlist_execute(SCMDLIST* list, DCB* backend_dcb)
 {
 	DCB* dcb = backend_dcb;
 	bool succp = true;
 	int rc = 0;
 	unsigned char packet_type;
-	if(dcb == NULL || buffer == NULL)
+	if(dcb == NULL || list == NULL)
 	    return false;
 	CHK_DCB(dcb);
+	SCMDCURSOR* cursor = get_cursor(list,backend_dcb);
+	GWBUF* buffer = sescmd_get_next(list,backend_dcb);
+
+	if(cursor == NULL)
+	{
+	    return false;
+	}
+
+	if(buffer == NULL)
+	{
+	    /** No more commands to execute */
+	    sescmd_cursor_set_active(cursor,false);
+	    return true;
+	}
+
+	if(cursor_waiting_result(cursor))
+	    return true;
 
 	packet_type = MYSQL_GET_COMMAND(((unsigned char*)buffer->start));
 	
@@ -367,6 +399,7 @@ sescmdlist_execute(DCB* backend_dcb,GWBUF* buffer)
 			gwbuf_free(tmpbuf);
 		}
 #endif /*< SS_DEBUG */
+
 		switch(packet_type)
 		{
 		case MYSQL_COM_CHANGE_USER:
@@ -385,7 +418,7 @@ sescmdlist_execute(DCB* backend_dcb,GWBUF* buffer)
 			GWBUF* tmpbuf;
 			MYSQL_session* data;
 			unsigned int qlen;
-
+			
 			data = dcb->session->data;
 			tmpbuf = buffer;
 			qlen = MYSQL_GET_PACKET_LEN((unsigned char*) tmpbuf->start);
@@ -415,20 +448,68 @@ sescmdlist_execute(DCB* backend_dcb,GWBUF* buffer)
 		{
 			succp = false;
 		}
+		
+		cursor->replied_to = false;
+		sescmd_cursor_set_active(cursor,true);
 
 	return succp;
 }
 
-bool check_master_reply(SCMDLIST* list, DCB* dcb)
+/**
+ *
+ * @param list
+ * @return
+ */
+bool sescmdlist_execute_all(SCMDLIST* list)
+{
+   SCMDCURSOR* cursor = list->cursors;
+   while(cursor)
+   {
+       sescmdlist_execute(list,cursor->backend_dcb);
+       cursor = cursor->next;
+   }
+}
+
+/**
+ * See if the requirements to reply to the client are met.
+ * @param list Session command list
+ * @param dcb Backend server DCB
+ * @return True if the packet should be returned to the client, otherwise false.
+ */
+bool check_reply_semantics(SCMDLIST* list, DCB* dcb)
 {
     DCB* master = list->semantics.master_dcb;
+    SCMDCURSOR* scur = get_cursor(list, dcb);
+    SCMD* cmd;
 
-    if(master == NULL)
+    if(scur == NULL)
+	return false;
+
+    cmd =  scur->scmd_cur_cmd;
+
+    if(master)
+    {
+	/** The Master server has replied, this should be returned to the client */
+	if(dcb == master)
+	{
+	    return true;
+	}
+	else
+	{
+	    return false;
+	}
+    }
+
+    if(scur->scmd_list->semantics.reply_on == SRES_FIRST ||
+       (scur->scmd_list->semantics.reply_on == SRES_LAST &&
+	cmd->n_replied >= scur->scmd_list->n_cursors) ||
+       (scur->scmd_list->semantics.reply_on == SRES_MIN &&
+	cmd->n_replied >= scur->scmd_list->semantics.min_nreplies))
+    {
 	return true;
-
-
-
-    return true;
+    }
+    
+    return false;
 }
 
 /**
@@ -474,74 +555,67 @@ bool sescmdlist_process_replies(
 
 	    command = MYSQL_GET_COMMAND(((unsigned char*)replybuf->start));
 
-                /** Faster backend has already responded to client : discard */
-                if (cmd->reply_sent)
-                {
-                        bool last_packet = false;
-                        
-                        CHK_GWBUF(replybuf);
-			
-			*rbuf = NULL;
+	    /** Set response status received */
+	    scur->replied_to = true;
 
-			while (replybuf && !GWBUF_IS_TYPE_RESPONSE_END(replybuf))
-                        {
-			    replybuf = gwbuf_consume(replybuf, GWBUF_LENGTH(replybuf));
-                        }
+	    /** Faster backend has already responded to client : discard */
+	    if (cmd->reply_sent)
+	    {
+		CHK_GWBUF(replybuf);
 
-			if(cmd->reply_type != command)
-			{
-			    skygw_log_write(LOGFILE_TRACE,"Server '%s:%u' Returned: %x instead of %x",
-				     dcb->server->name,
-				     dcb->server->port,
-				     command,
-				     cmd->reply_type);
-			    if(replybuf)
-				free(replybuf);
-			    *rbuf = NULL;
-			    rval = false;
-			}
-                }
-                /** Response is in the buffer and it will be sent to client. */
-                else
-                {
-                    /** Mark the session command as replied */
-                    
-                    atomic_add(&cmd->n_replied,1);
+		/** This might be a bit too optimistic, there could be
+		 * situations where we still want to return a packet to
+		 * the client even though the first */
+		*rbuf = NULL;
+		replybuf = gwbuf_consume(replybuf, GWBUF_LENGTH(replybuf));
+		
+		while (replybuf && !GWBUF_IS_TYPE_RESPONSE_END(replybuf))
+		{
+		    replybuf = gwbuf_consume(replybuf, GWBUF_LENGTH(replybuf));
+		}
 
-                    if(scur->scmd_list->semantics.reply_on == SRES_FIRST ||
-                       (scur->scmd_list->semantics.reply_on == SRES_LAST && 
-                        cmd->n_replied >= scur->scmd_list->n_cursors) || 
-		       (scur->scmd_list->semantics.reply_on == SRES_MIN && 
-                        cmd->n_replied >= scur->scmd_list->semantics.min_nreplies))
-                    {
-			cmd->reply_type = command;
-                        cmd->reply_sent = true;                     
-                    }
+		if(cmd->reply_type != command)
+		{
+		    skygw_log_write(LOGFILE_TRACE,"Server '%s:%u' Returned: %x instead of %x",
+			     dcb->server->name,
+			     dcb->server->port,
+			     command,
+			     cmd->reply_type);
+		    if(replybuf)
+			free(replybuf);
+		    *rbuf = NULL;
+		    rval = false;
+		}
+	    }
+	    /** Response is in the buffer and it will be sent to client. */
+	    else
+	    {
+		/** Mark the session command as replied */
+		atomic_add(&cmd->n_replied,1);
 
-                }
+		if(check_reply_semantics(list,dcb))
+		{
+		    cmd->reply_type = command;
+		    cmd->reply_sent = true;
+		    break;
+		}
+	    }
 
-                /** Set response status received */
-                scur->replied_to = true;                
 
-                if (sescmd_has_next(list,dcb))
-                {
-		    /** This moves the cursor forwards */
-		    sescmd_get_next(list,dcb);
-		    cmd = scur->scmd_cur_cmd;
-                }
-                else
-                {
-                        cmd = NULL;
-                        /** All session commands are replied */
-                        sescmd_cursor_set_active(scur, false);
-                }
+	    /** Get the next packet if one exists */
+	    if(*rbuf)
+	    {
+		replybuf = gwbuf_consume(
+			replybuf,
+			MYSQL_GET_PACKET_LEN(((unsigned char*)replybuf->start)));
+	    }
         }
         
         return rval;
 }
 
 /**
- * Add a DCB to the session command list. This allocates a new session command 
+ * Add a DCB to the session command list. This allocates a new session command
  * cursor for this DCB and starts the execution of pending commands.
  * @param list Session command list
  * @param dcb DCB to add

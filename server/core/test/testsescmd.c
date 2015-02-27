@@ -89,7 +89,7 @@ int main(int argc, char** argv)
     printf("OK\n");
     printf("Executing command... ");
     
-    if(!sescmdlist_execute(dcb,queue))
+    if(!sescmdlist_execute(list,dcb))
     {
 	printf("Failed to execute command\n");
         rval = 1;
@@ -113,7 +113,7 @@ int main(int argc, char** argv)
 
     printf("Generating a reply to the session command... ");
     
-    if(sescmdlist_process_replies(list,dcb,&response) == NULL)
+    if(!sescmdlist_process_replies(list,dcb,&response))
     {
         printf("Failed to process reply\n");
         rval = 1;

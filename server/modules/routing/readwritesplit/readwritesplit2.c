@@ -2596,11 +2596,12 @@ static void clientReply (
 		bref_clear_state(bref,BREF_IN_USE);
 		bref_set_state(bref,BREF_CLOSED);
 	    }
-	    else if(sescmd_has_next(router_cli_ses->rses_sescmd_list, backend_dcb))
+/*
+	    else
 	    {
-		ncmd = sescmd_get_next(router_cli_ses->rses_sescmd_list, backend_dcb);
-		sescmdlist_execute(backend_dcb, ncmd);
+		sescmdlist_execute(router_cli_ses->rses_sescmd_list,backend_dcb);
 	    }
+*/
 	    /** 
 	     * If response will be sent to client, decrease waiter count.
 	     * This applies to session commands only. Counter decrement
@@ -3011,13 +3012,9 @@ static bool select_connect_backend_servers(
                                                  * Start executing session command
                                                  * history.
                                                  */
-                                                sescmdlist_add_dcb(rses->rses_sescmd_list,backend_ref[i].bref_dcb);
-                                                
-						if(sescmd_has_next(rses->rses_sescmd_list,backend_ref[i].bref_dcb))
-						{
-						    GWBUF* ncmd = sescmd_get_next(rses->rses_sescmd_list,backend_ref[i].bref_dcb);
-						    sescmdlist_execute(backend_ref[i].bref_dcb,ncmd);
-						}
+                                                sescmdlist_add_dcb(rses->rses_sescmd_list,backend_ref[i].bref_dcb);                                                
+						sescmdlist_execute(rses->rses_sescmd_list,backend_ref[i].bref_dcb);
+
                                                 /** 
 						 * Here we actually say : When this
 						 * type of issue occurs (DCB_REASON_...)
@@ -3551,28 +3548,9 @@ static bool route_session_write(
          * Add the command to the list of session commands.
          */
         sescmdlist_add_command(router_cli_ses->rses_sescmd_list,querybuf);
+	sescmdlist_execute_all(router_cli_ses->rses_sescmd_list);
         gwbuf_free(querybuf);
-	/**
-	 * Execute the command in each of the backend servers unless they are already
-	 * executing session commands. 
-         */
-	for(i = 0;i<router_cli_ses->rses_nbackends;i++)
-	{
-	    DCB* dcb = backend_ref[i].bref_dcb;
-	    if (BREF_IS_IN_USE(&backend_ref[i]) && 
-	     !sescmdlist_is_active(router_cli_ses->rses_sescmd_list,dcb))
-	    {
-		nbackends += 1;
-		GWBUF* ncmd = sescmd_get_next(router_cli_ses->rses_sescmd_list,dcb);
-		ss_dassert(ncmd != NULL);
-		if(sescmdlist_execute(dcb,ncmd))
-		{
-		    nsucc += 1;
-		}
-	    }
-	}
-       
-
+	
         /** Unlock router session */
         rses_end_locked_router_action(router_cli_ses);
                

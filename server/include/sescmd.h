@@ -129,7 +129,7 @@ typedef struct sescmd_cursor_st
   struct sescmd_list_st* scmd_list; /*< Pointer to owning list */
   SCMD* scmd_cur_cmd; /*< Pointer to current session command */
   DCB* backend_dcb; /*< The backend DCB this cursor is associated with */
-  bool replied_to; /* Has the backend DCB received a response */
+  bool replied_to; /*< Has the backend DCB received a response */
   bool scmd_cur_active; /*< True if command is being executed */
   struct sescmd_cursor_st *next; /*< Next cursor */
   SPINLOCK lock; /*< Cursor spinlock */
@@ -151,7 +151,8 @@ void sescmdlist_free(SCMDLIST*);
 bool sescmdlist_add_command (SCMDLIST* list, GWBUF* buf);
 bool sescmdlist_add_dcb (SCMDLIST* list, DCB* dcb);
 bool sescmdlist_remove_dcb (SCMDLIST* list, DCB* dcb);
-bool sescmdlist_execute(DCB* backend_dcb,GWBUF* buffer);
+bool sescmdlist_execute(SCMDLIST* list, DCB* backend_dcb);
+bool sescmdlist_execute_all(SCMDLIST* list);
 bool sescmdlist_is_active(SCMDLIST* list, DCB* dcb);
 bool sescmd_has_next(SCMDLIST* list, DCB* dcb);
 GWBUF* sescmd_get_next(SCMDLIST* list, DCB* dcb);
