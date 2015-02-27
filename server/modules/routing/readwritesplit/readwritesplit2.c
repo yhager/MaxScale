@@ -655,7 +655,7 @@ createInstance(SERVICE *service, char **options)
 	router->bitvalue = 0;
         
 	router->semantics.must_reply = SNUM_ONE;
-	router->semantics.reply_on = SRES_FIRST;
+	router->semantics.reply_on = SRES_DCB;
 	router->semantics.timeout = 0;
 	router->semantics.on_error = SERR_DROP;
 	
@@ -858,7 +858,7 @@ static void* newSession(
                                                router);
 
         rses_end_locked_router_action(client_rses);
-        
+        client_rses->rses_sescmd_list->semantics.master_dcb = master_ref->bref_dcb;
         /** 
 	 * Master and at least <min_nslaves> slaves must be found 
 	 */
@@ -879,9 +879,9 @@ static void* newSession(
         
 	for(i = 0;i< router_nservers;i++)
 	{
-	    
-	    sescmdlist_add_dcb(client_rses->rses_sescmd_list,
-		     client_rses->rses_backend_ref[i].bref_dcb);
+	    if(client_rses->rses_backend_ref[i].bref_dcb)
+		sescmdlist_add_dcb(client_rses->rses_sescmd_list,
+				 client_rses->rses_backend_ref[i].bref_dcb);
 	}
 	
         /**
@@ -2589,19 +2589,21 @@ static void clientReply (
 	     * the client. 
 	     */
 	    GWBUF* ncmd;
-	    bool success = sescmdlist_process_replies(router_cli_ses->rses_sescmd_list, backend_dcb, &buffer);
+	    SCMDCURSOR* cursor;
+
+	    cursor = dcb_get_sescmdcursor(backend_dcb);
+	    bool success = sescmdlist_process_replies(cursor, &buffer);
 
 	    if(!success)
 	    {
 		bref_clear_state(bref,BREF_IN_USE);
 		bref_set_state(bref,BREF_CLOSED);
 	    }
-/*
 	    else
 	    {
-		sescmdlist_execute(router_cli_ses->rses_sescmd_list,backend_dcb);
+		sescmdlist_execute(cursor);
 	    }
-*/
+
 	    /** 
 	     * If response will be sent to client, decrease waiter count.
 	     * This applies to session commands only. Counter decrement
@@ -2835,7 +2837,8 @@ static bool select_connect_backend_servers(
         bool            is_synced_master;
         int (*p)(const void *, const void *);
 	BACKEND*       master_host;
-        
+	SCMDCURSOR* cursor;
+
         if (p_master_ref == NULL || backend_ref == NULL)
         {
                 ss_dassert(FALSE);
@@ -3012,8 +3015,9 @@ static bool select_connect_backend_servers(
                                                  * Start executing session command
                                                  * history.
                                                  */
-                                                sescmdlist_add_dcb(rses->rses_sescmd_list,backend_ref[i].bref_dcb);                                                
-						sescmdlist_execute(rses->rses_sescmd_list,backend_ref[i].bref_dcb);
+                                                sescmdlist_add_dcb(rses->rses_sescmd_list,backend_ref[i].bref_dcb);
+						cursor = dcb_get_sescmdcursor(backend_ref[i].bref_dcb);
+						sescmdlist_execute(cursor);
 
                                                 /** 
 						 * Here we actually say : When this
@@ -3548,7 +3552,16 @@ static bool route_session_write(
          * Add the command to the list of session commands.
          */
         sescmdlist_add_command(router_cli_ses->rses_sescmd_list,querybuf);
-	sescmdlist_execute_all(router_cli_ses->rses_sescmd_list);
+	for(i = 0;i<router_cli_ses->rses_nbackends;i++)
+	{
+	    if(BREF_IS_IN_USE(&router_cli_ses->rses_backend_ref[i]))
+	    {
+		SCMDCURSOR* cursor;
+		cursor = dcb_get_sescmdcursor(router_cli_ses->rses_backend_ref[i].bref_dcb);
+		sescmdlist_execute(cursor);
+	    }
+	}
+
         gwbuf_free(querybuf);
 	
         /** Unlock router session */
@@ -3730,8 +3743,6 @@ static void handleError (
 				* This is called in hope of getting replacement for 
 				* failed slave(s).
 				*/
-			    
-				sescmdlist_remove_dcb(rses->rses_sescmd_list,backend_dcb);
 			    
 				*succp = handle_error_new_connection(inst, 
 								rses, 

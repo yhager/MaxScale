@@ -7,7 +7,7 @@ endforeach()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(harness_ui harness_ui.c harness_common.c)
-add_executable(harness harness_util.c harness_common.c ${CORE})
+add_executable(harness harness_util.c harness_common.c ${FULLCORE})
 target_link_libraries(harness_ui fullcore log_manager utils)
 target_link_libraries(harness fullcore)
 execute_process(COMMAND ${CMAKE_COMMAND} -E copy ${ERRMSG} ${CMAKE_CURRENT_BINARY_DIR})

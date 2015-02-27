@@ -424,6 +424,11 @@ DCB_CALLBACK		*cb;
                 while ((queue = gwbuf_consume(queue, GWBUF_LENGTH(queue))) != NULL);
         }
 
+	if (dcb->cursor)
+	{
+	    free(dcb->cursor);
+	}
+
 	spinlock_acquire(&dcb->cb_lock);
 	while ((cb = dcb->callbacks) != NULL)
 	{
@@ -2171,4 +2176,16 @@ static int
 dcb_null_auth(DCB *dcb, SERVER *server, SESSION *session, GWBUF *buf)
 {
 	return 0;
+}
+
+/**
+ * Returns the session command cursor of the DCB.
+ * @param dcb DCB to use
+ * @return Pointer to session command cursor of type SCMDCURSOR or NULL if the
+ * DCB has not been linked to a session command list.
+ */
+void *dcb_get_sescmdcursor(DCB* dcb)
+{
+
+    return dcb ? dcb->cursor : NULL;
 }

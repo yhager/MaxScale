@@ -17,6 +17,7 @@ int main(int argc, char** argv)
     const char* query = "set @test1=1";    
     int rval = 0;
     SCMDLIST* list;
+    SCMDCURSOR* cursor;
     DCB* dcb;
     GWBUF *buffer, *response, *queue;
     
@@ -66,30 +67,18 @@ int main(int argc, char** argv)
         goto retblock;
     }
     printf("OK\n");
-    printf("Checking pending commands... ");
-    if(!sescmd_has_next(list,dcb))
+    printf("Checking session command cursor... ");
+    cursor = dcb_get_sescmdcursor(dcb);
+    if(cursor == NULL)
     {
-	printf("Failed to check pending commands from the list\n");
+	printf("Failed to retrieve session command cursor\n");
         rval = 1;
         goto retblock;
     }
-    
-    printf("OK\n");
-    printf("Getting command from list... ");
-	    
-    if((queue = sescmd_get_next(list,dcb)) == NULL)
-    {
-	printf("Failed to retrieve command from the list\n");
-        rval = 1;
-        goto retblock;
-    }
-    
-    
-    
     printf("OK\n");
     printf("Executing command... ");
-    
-    if(!sescmdlist_execute(list,dcb))
+
+    if(!sescmdlist_execute(cursor))
     {
 	printf("Failed to execute command\n");
         rval = 1;
@@ -113,7 +102,7 @@ int main(int argc, char** argv)
 
     printf("Generating a reply to the session command... ");
     
-    if(!sescmdlist_process_replies(list,dcb,&response))
+    if(!sescmdlist_process_replies(cursor,&response))
     {
         printf("Failed to process reply\n");
         rval = 1;
@@ -121,17 +110,6 @@ int main(int argc, char** argv)
     }
 
     printf("OK\n");    
-
-    printf("Removing DCB... ");
-    
-    if(!sescmdlist_remove_dcb(list,dcb))
-    {
-        printf("Removing the DCB failed\n");
-        rval = 1;
-        goto retblock;
-    }
-    printf("OK\n<");
-    
     
     retblock:
     

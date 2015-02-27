@@ -50,7 +50,7 @@ typedef enum
 {
   SNUM_ONE,
   SNUM_ALL
-} sescmd_rspnum;
+} sescmd_response_num_t;
 
 /** 
  * When to send the reply to the client. If this is set to SRES_FIRST the first
@@ -68,7 +68,7 @@ typedef enum
   SRES_TIMEOUT, /*< To be implemented */
   SRES_MIN,
   SRES_DCB /*< When a specific DCB replies */
-} sescmd_rsp;
+} sescmd_return_response_t;
 
 /** 
  * What to do when a backend responds with an error. If this is set to SERR_DROP
@@ -81,13 +81,13 @@ typedef enum
 {
   SERR_DROP, /*< To be implemented */
   SERR_FAIL_CONN /*< To be implemented */
-} sescmd_rsperr;
+} sescmd_error_action_t;
 
 typedef struct semantics_t
   { 
-     sescmd_rspnum must_reply; /*< How many must reply */
-     sescmd_rsp reply_on; /*< when to send the reply to the client */
-     sescmd_rsperr on_error; /*< What to do when an error occurs */
+     sescmd_response_num_t must_reply; /*< How many must reply */
+     sescmd_return_response_t reply_on; /*< when to send the reply to the client */
+     sescmd_error_action_t on_error; /*< What to do when an error occurs */
      int min_nreplies; /*< Minimum number of replies that must be received 
                         * before the reply is sent to the client*/
      int timeout; /*<  Backends replying later than this are considere as failed.
@@ -100,7 +100,8 @@ typedef struct semantics_t
 typedef enum
 {
   DROP_LAST,
-  DROP_FIRST
+  DROP_FIRST,
+  CLOSE_CONNECTION
 } mlen_err_t;
 
 /** List properties */
@@ -121,13 +122,12 @@ typedef struct mysql_sescmd_st
   struct mysql_sescmd_st* next; /*< The session command that was executed
                                  * after this one */ 
   unsigned char reply_type; /*< Replied packet type */
-
 } SCMD;
 
 typedef struct sescmd_cursor_st
 {
   struct sescmd_list_st* scmd_list; /*< Pointer to owning list */
-  SCMD* scmd_cur_cmd; /*< Pointer to current session command */
+  SCMD* current_cmd; /*< Pointer to current session command */
   DCB* backend_dcb; /*< The backend DCB this cursor is associated with */
   bool replied_to; /*< Has the backend DCB received a response */
   bool scmd_cur_active; /*< True if command is being executed */
@@ -139,8 +139,7 @@ typedef struct sescmd_list_st
 {
   SCMD *first; /*< First session command */
   SCMD *last; /*< Latest session command */
-  SCMDCURSOR* cursors; /*< List of cursors for this list */
-  int n_cursors; /*< Number of session command cursors */
+  int n_cursors; /*< Number of session command cursors added */
   SEMANTICS semantics; /*< The way the session command list behaves */
   list_prop_t properties; /*< Properties of the list */
   SPINLOCK lock;
@@ -148,15 +147,12 @@ typedef struct sescmd_list_st
 
 SCMDLIST* sescmdlist_allocate();
 void sescmdlist_free(SCMDLIST*);
-bool sescmdlist_add_command (SCMDLIST* list, GWBUF* buf);
-bool sescmdlist_add_dcb (SCMDLIST* list, DCB* dcb);
-bool sescmdlist_remove_dcb (SCMDLIST* list, DCB* dcb);
-bool sescmdlist_execute(SCMDLIST* list, DCB* backend_dcb);
-bool sescmdlist_execute_all(SCMDLIST* list);
-bool sescmdlist_is_active(SCMDLIST* list, DCB* dcb);
-bool sescmd_has_next(SCMDLIST* list, DCB* dcb);
-GWBUF* sescmd_get_next(SCMDLIST* list, DCB* dcb);
-bool sescmdlist_process_replies(SCMDLIST* list, DCB* dcb, GWBUF** response);
+bool sescmdlist_add_command (SCMDLIST* , GWBUF* );
+bool sescmdlist_add_dcb (SCMDLIST* , DCB* );
+bool sescmdlist_execute(SCMDCURSOR*);
+bool sescmdlist_is_active(SCMDLIST* , DCB* );
+bool sescmd_has_next(SCMDCURSOR*);
+GWBUF* sescmd_get_next(SCMDCURSOR*);
+bool sescmdlist_process_replies(SCMDCURSOR*, GWBUF** );
 bool sescmd_handle_failure(SCMDLIST* list, DCB* dcb);
 #endif	/* SESCMD_H */
-
