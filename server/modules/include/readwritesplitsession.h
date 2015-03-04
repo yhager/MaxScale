@@ -1,5 +1,5 @@
-#ifndef _RWSPLITROUTER_H
-#define _RWSPLITROUTER_H
+#ifndef _RWSPLITROUTERSESSION_H
+#define _RWSPLITROUTERSESSION_H
 /*
  * This file is distributed as part of the MariaDB Corporation MaxScale.  It is free
  * software: you can redistribute it and/or modify it under the terms of the
@@ -192,40 +192,35 @@ typedef struct rwsplit_config_st {
 } rwsplit_config_t;
      
 /**
- * The statistics for this router instance
+ * The client session structure used within this router.
  */
-typedef struct {
-	int		n_sessions;	/*< Number sessions created        */
-	int		n_queries;	/*< Number of queries forwarded    */
-	int		n_master;	/*< Number of stmts sent to master */
-	int		n_slave;	/*< Number of stmts sent to slave  */
-	int		n_all;		/*< Number of stmts sent to all    */
-} ROUTER_STATS;
-
-
-/**
- * The per instance data for the router.
- */
-typedef struct router_instance {
-	SERVICE*                service;     /*< Pointer to service                 */
-	ROUTER_CLIENT_SES*      connections; /*< List of client connections         */
-	SPINLOCK                lock;	     /*< Lock for the instance data         */
-	BACKEND**               servers;     /*< Backend servers                    */
-        int                     nservers;    /*< Memorandum number of servers       */
-	BACKEND*                master;      /*< NULL or pointer                    */
-	rwsplit_config_t        rwsplit_config; /*< expanded config info from SERVICE */
-	int                     rwsplit_version;/*< version number for router's config */
-        unsigned int	        bitmask;     /*< Bitmask to apply to server->status */
-	unsigned int	        bitvalue;    /*< Required value of server->status   */
-	ROUTER_STATS            stats;       /*< Statistics for this router         */
-        struct router_instance* next;        /*< Next router on the list            */
-	bool			available_slaves;
-					    /*< The router has some slaves avialable */
-        SEMANTICS               semantics; /*< Session command semantics */
-} ROUTER_INSTANCE;
+struct router_client_session {
+#if defined(SS_DEBUG)
+        skygw_chk_t      rses_chk_top;
+#endif
+        SPINLOCK         rses_lock;      /*< protects rses_deleted                 */
+        ROUTER           *instance;      /*< The router instance for which this is a session */
+        int              rses_versno;    /*< even = no active update, else odd. not used 4/14 */
+        bool             rses_closed;    /*< true when closeSession is called      */
+	/** Properties listed by their type */
+	rses_property_t* rses_properties[RSES_PROP_TYPE_COUNT];
+        backend_ref_t*   rses_master_ref;
+        backend_ref_t*   rses_backend_ref; /*< Pointer to backend reference array */
+        rwsplit_config_t rses_config;    /*< copied config info from router instance */
+        int              rses_nbackends;
+        int              rses_capabilities; /*< input type, for example */
+        bool             rses_autocommit_enabled;
+        bool             rses_transaction_active;
+        SCMDLIST*        rses_sescmd_list; /*< Session commands */
+	struct router_instance	 *router;	/*< The router instance */
+        struct router_client_session* next;
+#if defined(SS_DEBUG)
+        skygw_chk_t      rses_chk_tail;
+#endif
+} ROUTER_SESSION;
 
 #define BACKEND_TYPE(b) (SERVER_IS_MASTER((b)->backend_server) ? BE_MASTER :    \
         (SERVER_IS_SLAVE((b)->backend_server) ? BE_SLAVE :  BE_UNDEFINED));
 
     
-#endif /*< _RWSPLITROUTER_H */
+#endif /*< _RWSPLITROUTERSESSION_H */
