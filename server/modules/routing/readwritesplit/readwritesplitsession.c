@@ -13,8 +13,28 @@
  * this program; if not, write to the Free Software Foundation, Inc., 51
  * Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * Copyright MariaDB Corporation Ab 2013-2014
+ * Copyright MariaDB Corporation Ab 2014
  */
+
+/**
+ * @file readwriteroutersession.c  - The MaxScale read-write router session class
+ *
+ * When a MaxScale service is created from a definition in the configuration
+ * file, a router is specified and a router instance is also created.
+ * 
+ * When a user connects to the service, a router session is created, and this
+ * class represents the router session. 
+ *
+ * @verbatim
+ * Revision History
+ *
+ * Date		Who			Description
+ * 04/03/15	Martin Brampton
+ *              and Markus Makela	Initial implementation
+ *
+ * @endverbatim
+ */
+
 #include <my_config.h>
 #include <stdio.h>
 #include <strings.h>
@@ -35,12 +55,6 @@
 #include <modutil.h>
 #include <mysql_client_server_protocol.h>
 
-MODULE_INFO 	info = {
-	MODULE_API_ROUTER,
-	MODULE_GA,
-	ROUTER_VERSION,
-	"A Read/Write splitting router for enhancement read scalability"
-};
 #if defined(SS_DEBUG)
 #  include <mysql_client_server_protocol.h>
 
@@ -49,37 +63,12 @@ MODULE_INFO 	info = {
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
 extern size_t         log_ses_count[];
-extern __thread log_info_t tls_log_info;
-/**
- * @file readwritesplit.c	The entry points for the read/write query splitting
- * router module.
- *
- * This file contains the entry points that comprise the API to the read write
- * query splitting router.
- * @verbatim
- * Revision History
- *
- * Date		Who			Description
- * 01/07/2013	Vilho Raatikka		Initial implementation
- * 15/07/2013	Massimiliano Pinto	Added clientReply
- *					from master only in case of session change
- * 17/07/2013	Massimiliano Pinto	clientReply is now used by mysql_backend
- *					for all reply situations
- * 18/07/2013	Massimiliano Pinto	routeQuery now handles COM_QUIT
- *					as QUERY_TYPE_SESSION_WRITE
- * 17/07/2014	Massimiliano Pinto	Server connection counter is updated in closeSession
- *
- * @endverbatim
- */
+extern __thread       log_info_t tls_log_info;
 
-static char *version_str = "V1.0.2";
-
-static	ROUTER* createInstance(SERVICE *service, char **options);
 static	void*   newSession(ROUTER *instance, SESSION *session);
 static	void    closeSession(ROUTER *instance, void *session);
 static	void    freeSession(ROUTER *instance, void *session);
 static	int     routeQuery(ROUTER *instance, void *session, GWBUF *queue);
-static	void    diagnostic(ROUTER *instance, DCB *dcb);
 
 static  void	clientReply(
         ROUTER* instance,
@@ -196,17 +185,6 @@ static void rwsplit_process_router_options(
 
 
 
-static ROUTER_OBJECT MyObject = {
-        createInstance,
-        newSession,
-        closeSession,
-        freeSession,
-        routeQuery,
-        diagnostic,
-        clientReply,
-	handleError,
-        getCapabilities
-};
 static bool rses_begin_locked_router_action(
         ROUTER_CLIENT_SES* rses);
 
@@ -236,18 +214,6 @@ static bool route_session_write(
         ROUTER_INSTANCE*   inst,
         unsigned char      packet_type,
         skygw_query_type_t qtype);
-
-static void refresh_max_slave_connections(
-        ROUTER_INSTANCE*  router_instance,
-        CONFIG_PARAMETER* config_param);
-
-static void refresh_max_slave_replication_lag(
-        ROUTER_INSTANCE*  router_instance,
-        CONFIG_PARAMETER* config_param);
-
-static void refresh_use_sql_variables_in(
-        ROUTER_INSTANCE*  router_instance,
-        CONFIG_PARAMETER* config_param);
 
 static void bref_clear_state(backend_ref_t* bref, bref_state_t state);
 static void bref_set_state(backend_ref_t*   bref, bref_state_t state);
@@ -333,316 +299,6 @@ version()
 }
 
 /**
- * The module initialisation routine, called when the module
- * is first loaded.
- */
-void
-ModuleInit()
-{
-        LOGIF(LM, (skygw_log_write_flush(
-                           LOGFILE_MESSAGE,
-                           "Initializing statemend-based read/write split router module.")));
-        spinlock_init(&instlock);
-        instances = NULL;
-}
-
-/**
- * The module entry point routine. It is this routine that
- * must populate the structure that is referred to as the
- * "module object", this is a structure with the set of
- * external entry points for this module.
- *
- * @return The module object
- */
-ROUTER_OBJECT* GetModuleObject()
-{
-        return &MyObject;
-}
-
-/**
- * Refresh the instance parameter max_slave_connections
- * 
- * @param router_instance	Router instance
- * @param config_param          Parameter to be reloaded
- * 
- */
-
-static void refresh_max_slave_connections(
-        ROUTER_INSTANCE     *router_instance,
-        CONFIG_PARAMETER    *config_param)
-{
-    int val;
-    config_param_type_t paramtype = config_get_paramtype(config_param);
-    bool success = config_get_valint(&val, config_param, NULL, paramtype);
-    if (COUNT_TYPE == paramtype && success) 
-    {
-        router_instance->rwsplit_config.rw_max_slave_conn_percent = 0;
-        router_instance->rwsplit_config.rw_max_slave_conn_count = val;
-    }
-    if (PERCENT_TYPE == paramtype && success) 
-    {
-        router_instance->rwsplit_config.rw_max_slave_conn_percent = val;
-        router_instance->rwsplit_config.rw_max_slave_conn_count = 0;
-    }
-}
-
-/**
- * Refresh the instance parameter max_slave_replication_lag
- * 
- * @param router_instance	Router instance
- * @param config_param          Parameter to be reloaded
- * 
- */
-
-static void refresh_max_slave_replication_lag(
-        ROUTER_INSTANCE     *router_instance,
-        CONFIG_PARAMETER    *config_param)
-{
-    int val;
-    config_param_type_t paramtype = config_get_paramtype(config_param);
-    bool success = config_get_valint(&val, config_param, NULL, paramtype);
-    if (COUNT_TYPE == paramtype && success) 
-    {
-        router_instance->rwsplit_config.rw_max_slave_conn_count = val;
-    }
-}
-
-/**
- * Refresh the instance parameter use_sql_variables_in
- * 
- * @param router_instance	Router instance
- * @param config_param          Parameter to be reloaded
- * 
- * Note: this part is not done. Needs refactoring.
- */
-
-static void refresh_use_sql_variables_in(
-        ROUTER_INSTANCE     *router_instance,
-        CONFIG_PARAMETER    *config_param)
-{
-    target_t valtarget;
-    config_param_type_t paramtype = config_get_paramtype(config_param);
-    bool success = config_get_valtarget(&valtarget, config_param, NULL, paramtype);
-    if (SQLVAR_TARGET_TYPE == paramtype && success) 
-    {
-        router_instance->rwsplit_config.rw_use_sql_variables_in = valtarget;
-    }
-}
-
-/**
- * Create an instance of read/write statement router within the MaxScale.
- *
- * 
- * @param service	The service this router is being create for
- * @param options	The options for this query router
- *
- * @return NULL in failure, pointer to router in success.
- */
-static ROUTER *
-createInstance(SERVICE *service, char **options)
-{
-        ROUTER_INSTANCE*    router;
-        SERVER*             server;
-        SERVER_REF*         sref;
-        int                 nservers;
-        int                 i;
-        CONFIG_PARAMETER*   param;
-	char		    *weightby;
-        
-        if ((router = calloc(1, sizeof(ROUTER_INSTANCE))) == NULL) {
-                return NULL; 
-        } 
-        router->service = service;
-        spinlock_init(&router->lock);
-        
-        /** Calculate number of servers */
-        sref = service->dbref;
-        nservers = 0;
-        
-        while (sref != NULL)
-        {
-                nservers++;
-                sref=sref->next;
-        }
-        router->servers = (BACKEND **)calloc(nservers + 1, sizeof(BACKEND *));
-        
-        if (router->servers == NULL)
-        {
-                free(router);
-                return NULL;
-        }
-        /**
-         * Create an array of the backend servers in the router structure to
-         * maintain a count of the number of connections to each
-         * backend server.
-         */
-
-        sref = service->dbref;
-        nservers= 0;
-        
-        while (sref != NULL) {
-                if ((router->servers[nservers] = malloc(sizeof(BACKEND))) == NULL)
-                {
-                        /** clean up */
-                        for (i = 0; i < nservers; i++) {
-                                free(router->servers[i]);
-                        }
-                        free(router->servers);
-                        free(router);
-                        return NULL;
-                }
-                router->servers[nservers]->backend_server = sref->server;
-                router->servers[nservers]->backend_conn_count = 0;
-                router->servers[nservers]->be_valid = false;
-                router->servers[nservers]->weight = 1000;
-#if defined(SS_DEBUG)
-                router->servers[nservers]->be_chk_top = CHK_NUM_BACKEND;
-                router->servers[nservers]->be_chk_tail = CHK_NUM_BACKEND;
-#endif
-                nservers += 1;
-                sref = sref->next;
-        }
-        router->servers[nservers] = NULL;
-
-	/*
-	 * Until we know otherwise assume we have some available slaves.
-	 */
-	router->available_slaves = true;
-
-	/*
-	 * If server weighting has been defined calculate the percentage
-	 * of load that will be sent to each server. This is only used for
-	 * calculating the least connections, either globally or within a
-	 * service, or the numebr of current operations on a server.
-	 */
-	if ((weightby = serviceGetWeightingParameter(service)) != NULL)
-	{
-		int 	n, total = 0;
-		BACKEND	*backend;
-
-		for (n = 0; router->servers[n]; n++)
-		{
-			backend = router->servers[n];
-			total += atoi(serverGetParameter(
-					backend->backend_server, weightby));
-		}
-		if (total == 0)
-		{
-			LOGIF(LE, (skygw_log_write(LOGFILE_ERROR,
-				"WARNING: Weighting Parameter for service '%s' "
-				"will be ignored as no servers have values "
-				"for the parameter '%s'.\n",
-				service->name, weightby)));
-		}
-		else
-		{
-			for (n = 0; router->servers[n]; n++)
-			{
-				int perc;
-				int wght;
-				backend = router->servers[n];
-				wght = atoi(serverGetParameter(backend->backend_server,
-							       weightby));
-				perc = (wght*1000) / total;
-					
-				if (perc == 0 && wght != 0)
-				{
-					perc = 1;
-				}
-				backend->weight = perc;
-
-				if (perc == 0)
-				{
-					LOGIF(LE, (skygw_log_write(
-						LOGFILE_ERROR,
-						"Server '%s' has no value "
-						"for weighting parameter '%s', "
-						"no queries will be routed to "
-						"this server.\n",
-						router->servers[n]->backend_server->unique_name,
-						weightby)));
-				}
-			}
-		}
-	}
-        
-        /**
-         * vraa : is this necessary for readwritesplit ?
-         * Option : where can a read go?
-         * - master (only)
-         * - slave (only)
-         * - joined (to both)
-         *
-	 * Process the options
-	 */
-	router->bitmask = 0;
-	router->bitvalue = 0;
-        
-	router->semantics.must_reply = SNUM_ONE;
-	router->semantics.reply_on = SRES_DCB;
-	router->semantics.timeout = 0;
-	router->semantics.on_error = SERR_DROP;
-	
-        /** Call this before refreshing parameters */
-	if (options)
-	{
-                rwsplit_process_router_options(router, options);
-	}
-	/** 
-         * Set default value for max_slave_connections and for slave selection
-         * criteria. If parameter is set in config file max_slave_connections 
-         * will be overwritten.
-         */
-        router->rwsplit_config.rw_max_slave_conn_count = CONFIG_MAX_SLAVE_CONN;
-        
-        if (router->rwsplit_config.rw_slave_select_criteria == UNDEFINED_CRITERIA)
-        {
-                router->rwsplit_config.rw_slave_select_criteria = DEFAULT_CRITERIA;
-        }
-        /**
-         * Copy all config parameters from service to router instance.
-         * Finally, copy version number to indicate that configs match.
-         */
-        param = config_get_param(service->svc_config_param, "max_slave_connections");
-        
-        if (param != NULL)
-        {
-                refresh_max_slave_connections(router, param);
-        }
-        /** 
-         * Read default value for slave replication lag upper limit and then
-         * configured value if it exists.
-         */
-        router->rwsplit_config.rw_max_slave_replication_lag = CONFIG_MAX_SLAVE_RLAG;
-        param = config_get_param(service->svc_config_param, "max_slave_replication_lag");
-        
-        if (param != NULL)
-        {
-                refresh_max_slave_replication_lag(router, param);
-        }
-        router->rwsplit_version = service->svc_config_version;
-	/** Set default values */
-	router->rwsplit_config.rw_use_sql_variables_in = CONFIG_SQL_VARIABLES_IN;
-	param = config_get_param(service->svc_config_param, "use_sql_variables_in");
-
-	if (param != NULL)
-	{
-		refresh_use_sql_variables_in(router, param);
-	}
-        /**
-         * We have completed the creation of the router data, so now
-         * insert this router into the linked list of routers
-         * that have been created with this module.
-         */
-        spinlock_acquire(&instlock);
-        router->next = instances;
-        instances = router;
-        spinlock_release(&instlock);
-        
-        return (ROUTER *)router;
-}
-
-/**
  * Associate a new session with this instance of the router.
  *
  * The session is used to store all the data required for a particular
@@ -652,14 +308,14 @@ createInstance(SERVICE *service, char **options)
  * @param session	The session itself
  * @return Session specific data for this session
  */
-static void* newSession(
-        ROUTER*  router_inst,
-        SESSION* session)
+static ROUTER_SESSION *newSession(
+        ROUTER  *router_instance,
+        SESSION *session)
 {
         backend_ref_t*      backend_ref; /*< array of backend references (DCB,BACKEND,cursor) */
         backend_ref_t*      master_ref  = NULL; /*< pointer to selected master */
-        ROUTER_CLIENT_SES*  client_rses = NULL;
-        ROUTER_INSTANCE*    router      = (ROUTER_INSTANCE *)router_inst;
+        ROUTER_SESSION      *router_session = NULL;
+        ROUTER_INSTANCE     *router      = (ROUTER_INSTANCE *)router_instance;
         bool                succp;
         int                 router_nservers = 0; /*< # of servers in total */
         int                 max_nslaves;      /*< max # of slaves used in this session */
@@ -667,19 +323,19 @@ static void* newSession(
         int                 i;
         const int           min_nservers = 1; /*< hard-coded for now */
         
-        client_rses = (ROUTER_CLIENT_SES *)calloc(1, sizeof(ROUTER_CLIENT_SES));
+        router_session = (ROUTER_SESSION *)malloc(sizeof(ROUTER_SESSION));
         
-        if (client_rses == NULL)
+        if (router_session == NULL)
         {
                 ss_dassert(false);
                 goto return_rses;
         }
 #if defined(SS_DEBUG)
-        client_rses->rses_chk_top = CHK_NUM_ROUTER_SES;
-        client_rses->rses_chk_tail = CHK_NUM_ROUTER_SES;
+        router_session->rses_chk_top = CHK_NUM_ROUTER_SES;
+        router_session->rses_chk_tail = CHK_NUM_ROUTER_SES;
 #endif
 
-	client_rses->router = router;
+	router_session->router = router;
         /** 
          * If service config has been changed, reload config from service to 
          * router instance first.
@@ -688,26 +344,41 @@ static void* newSession(
         
         if (router->service->svc_config_version > router->rwsplit_version)
         {
-                /** re-read all parameters to rwsplit config structure */
-                refreshInstance(router, NULL); /*< scan through all parameters */
-                /** increment rwsplit router's config version number */
-                router->rwsplit_version = router->service->svc_config_version;  
-                /** Read options */
-                rwsplit_process_router_options(router, router->service->routerOptions);
+            /** re-read all parameters to rwsplit config structure */
+            param = router->service->svc_config_param;
+            while (param != NULL)
+            {
+                if (strncmp(param->name, 'max_slave_connections', MAX_PARAM_LEN) == 0)
+                {
+                    refresh_max_slave_connections(router, param);
+                }
+                else if (strcnmp(param->name, 'max_slave_replication_lag', MAX_PARAM_LEN) == 0)
+                {
+                    refresh_max_slave_replication_lag(router, param);
+                }
+                else if (strcnmp(param->name, 'use_sql_variables_in', MAX_PARAM_LEN) == 0)
+                {
+                    refresh_max_slave_connections(router, param);
+                }
+            }
+            /** increment rwsplit router's config version number */
+            router->rwsplit_version = router->service->svc_config_version;  
+            /** Read options */
+            rwsplit_process_router_options(router, router->service->routerOptions);
         }
         /** Copy config struct from router instance */
-        client_rses->rses_config = router->rwsplit_config;
+        router_session->rses_config = router->rwsplit_config;
         
         spinlock_release(&router->lock);
         /** 
          * Set defaults to session variables. 
          */
-        client_rses->rses_autocommit_enabled = true;
-        client_rses->rses_transaction_active = false;
+        router_session->rses_autocommit_enabled = true;
+        router_session->rses_transaction_active = false;
         
         router_nservers = router_get_servercount(router);
         
-        if (!have_enough_servers(&client_rses, 
+        if (!have_enough_servers(&router_session, 
                                 min_nservers, 
                                 router_nservers, 
                                 router))
@@ -715,14 +386,14 @@ static void* newSession(
                 goto return_rses;
         }
         
-        if((client_rses->rses_sescmd_list = sescmdlist_allocate()) == NULL)
+        if((router_session->rses_sescmd_list = sescmdlist_allocate()) == NULL)
         {
-            free(client_rses);
-            client_rses = NULL;
+            free(router_session);
+            router_session = NULL;
             goto return_rses;
         }
         
-	client_rses->rses_sescmd_list->semantics = router->semantics;
+	router_session->rses_sescmd_list->semantics = router->semantics;
 	
         /**
          * Create backend reference objects for this session.
@@ -732,9 +403,9 @@ static void* newSession(
         if (backend_ref == NULL)
         {
                 /** log this */                        
-                free(client_rses);
+                free(router_session);
                 free(backend_ref);
-                client_rses = NULL;
+                router_session = NULL;
                 goto return_rses;
         }
         /** 
@@ -751,24 +422,24 @@ static void* newSession(
                 backend_ref[i].bref_backend = router->servers[i];
                 /** store pointers to sescmd list to both cursors */
         }
-        max_nslaves    = rses_get_max_slavecount(client_rses, router_nservers);
-        max_slave_rlag = rses_get_max_replication_lag(client_rses);
+        max_nslaves    = rses_get_max_slavecount(router_session, router_nservers);
+        max_slave_rlag = rses_get_max_replication_lag(router_session);
         
-        spinlock_init(&client_rses->rses_lock);
-        client_rses->rses_backend_ref = backend_ref;
+        spinlock_init(&router_session->rses_lock);
+        router_session->rses_backend_ref = backend_ref;
         
         /**
          * Find a backend servers to connect to.
          * This command requires that rsession's lock is held.
          */
 
-	succp = rses_begin_locked_router_action(client_rses);
+	succp = rses_begin_locked_router_action(router_session);
 
         if(!succp)
 	{
-                free(client_rses->rses_backend_ref);
-                free(client_rses);
-		client_rses = NULL;
+                free(router_session->rses_backend_ref);
+                free(router_session);
+		router_session = NULL;
                 goto return_rses;
 	}
         succp = select_connect_backend_servers(&master_ref,
@@ -776,62 +447,60 @@ static void* newSession(
                                                router_nservers,
                                                max_nslaves,
                                                max_slave_rlag,
-                                               client_rses->rses_config.rw_slave_select_criteria,
+                                               router_session->rses_config.rw_slave_select_criteria,
                                                session,
-                                               client_rses,
+                                               router_session,
                                                router);
 
-        rses_end_locked_router_action(client_rses);
-        client_rses->rses_sescmd_list->semantics.master_dcb = master_ref->bref_dcb;
+        rses_end_locked_router_action(router_session);
+        
         /** 
 	 * Master and at least <min_nslaves> slaves must be found 
 	 */
         if (!succp) {
-                free(client_rses->rses_backend_ref);
-                free(client_rses);
-                client_rses = NULL;
+                free(router_session->rses_backend_ref);
+                free(router_session);
+                router_session = NULL;
                 goto return_rses;                
         }
         /** Copy backend pointers to router session. */
-        client_rses->rses_master_ref   = master_ref;	
+        router_session->rses_master_ref   = master_ref;	
 	/* assert with master_host */
 	ss_dassert(master_ref && (master_ref->bref_backend->backend_server && SERVER_MASTER));
-        client_rses->rses_capabilities = RCAP_TYPE_STMT_INPUT;
-        client_rses->rses_backend_ref  = backend_ref;
-        client_rses->rses_nbackends    = router_nservers; /*< # of backend servers */
+        router_session->rses_capabilities = RCAP_TYPE_STMT_INPUT;
+        router_session->rses_backend_ref  = backend_ref;
+        router_session->rses_nbackends    = router_nservers; /*< # of backend servers */
         router->stats.n_sessions      += 1;
         
 	for(i = 0;i< router_nservers;i++)
 	{
-	    if(client_rses->rses_backend_ref[i].bref_dcb)
-		sescmdlist_add_dcb(client_rses->rses_sescmd_list,
-				 client_rses->rses_backend_ref[i].bref_dcb);
+	    
+	    sescmdlist_add_dcb(router_session->rses_sescmd_list,
+		     router_session->rses_backend_ref[i].bref_dcb);
 	}
 	
         /**
          * Version is bigger than zero once initialized.
          */
-        atomic_add(&client_rses->rses_versno, 2);
-        ss_dassert(client_rses->rses_versno == 2);
+        atomic_add(&router_session->rses_versno, 2);
+        ss_dassert(router_session->rses_versno == 2);
 	/**
          * Add this session to end of the list of active sessions in router.
          */
 	spinlock_acquire(&router->lock);
-        client_rses->next   = router->connections;
-        router->connections = client_rses;
+        router_session->next   = router->connections;
+        router->connections = router_session;
         spinlock_release(&router->lock);
 
 return_rses:    
 #if defined(SS_DEBUG)
-        if (client_rses != NULL)
+        if (router_session != NULL)
         {
-                CHK_CLIENT_RSES(client_rses);
+                CHK_CLIENT_RSES(router_session);
         }
 #endif
-        return (void *)client_rses;
+        return (void *)router_session;
 }
-
-
 
 /**
  * Close a session with the router, this is the mechanism
@@ -841,7 +510,6 @@ return_rses:
  * @param session	The session being closed
  */
 static void closeSession(
-        ROUTER* instance,
         void*   router_session)
 {
         ROUTER_CLIENT_SES* router_cli_ses;
@@ -2513,21 +2181,19 @@ static void clientReply (
 	     * the client. 
 	     */
 	    GWBUF* ncmd;
-	    SCMDCURSOR* cursor;
-
-	    cursor = dcb_get_sescmdcursor(backend_dcb);
-	    bool success = sescmdlist_process_replies(cursor, &buffer);
+	    bool success = sescmdlist_process_replies(router_cli_ses->rses_sescmd_list, backend_dcb, &buffer);
 
 	    if(!success)
 	    {
 		bref_clear_state(bref,BREF_IN_USE);
 		bref_set_state(bref,BREF_CLOSED);
 	    }
+/*
 	    else
 	    {
-		sescmdlist_execute(cursor);
+		sescmdlist_execute(router_cli_ses->rses_sescmd_list,backend_dcb);
 	    }
-
+*/
 	    /** 
 	     * If response will be sent to client, decrease waiter count.
 	     * This applies to session commands only. Counter decrement
@@ -2761,8 +2427,7 @@ static bool select_connect_backend_servers(
         bool            is_synced_master;
         int (*p)(const void *, const void *);
 	BACKEND*       master_host;
-	SCMDCURSOR* cursor;
-
+        
         if (p_master_ref == NULL || backend_ref == NULL)
         {
                 ss_dassert(FALSE);
@@ -2939,9 +2604,8 @@ static bool select_connect_backend_servers(
                                                  * Start executing session command
                                                  * history.
                                                  */
-                                                sescmdlist_add_dcb(rses->rses_sescmd_list,backend_ref[i].bref_dcb);
-						cursor = dcb_get_sescmdcursor(backend_ref[i].bref_dcb);
-						sescmdlist_execute(cursor);
+                                                sescmdlist_add_dcb(rses->rses_sescmd_list,backend_ref[i].bref_dcb);                                                
+						sescmdlist_execute(rses->rses_sescmd_list,backend_ref[i].bref_dcb);
 
                                                 /** 
 						 * Here we actually say : When this
@@ -3476,16 +3140,7 @@ static bool route_session_write(
          * Add the command to the list of session commands.
          */
         sescmdlist_add_command(router_cli_ses->rses_sescmd_list,querybuf);
-	for(i = 0;i<router_cli_ses->rses_nbackends;i++)
-	{
-	    if(BREF_IS_IN_USE(&router_cli_ses->rses_backend_ref[i]))
-	    {
-		SCMDCURSOR* cursor;
-		cursor = dcb_get_sescmdcursor(router_cli_ses->rses_backend_ref[i].bref_dcb);
-		sescmdlist_execute(cursor);
-	    }
-	}
-
+	sescmdlist_execute_all(router_cli_ses->rses_sescmd_list);
         gwbuf_free(querybuf);
 	
         /** Unlock router session */
@@ -3667,6 +3322,8 @@ static void handleError (
 				* This is called in hope of getting replacement for 
 				* failed slave(s).
 				*/
+			    
+				sescmdlist_remove_dcb(rses->rses_sescmd_list,backend_dcb);
 			    
 				*succp = handle_error_new_connection(inst, 
 								rses, 
