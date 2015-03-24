@@ -237,17 +237,9 @@ static bool route_session_write(
         unsigned char      packet_type,
         skygw_query_type_t qtype);
 
-static void refresh_max_slave_connections(
-        ROUTER_INSTANCE*  router_instance,
-        CONFIG_PARAMETER* config_param);
-
-static void refresh_max_slave_replication_lag(
-        ROUTER_INSTANCE*  router_instance,
-        CONFIG_PARAMETER* config_param);
-
-static void refresh_use_sql_variables_in(
-        ROUTER_INSTANCE*  router_instance,
-        CONFIG_PARAMETER* config_param);
+static void refreshInstance(
+        ROUTER_INSTANCE*  router,
+        CONFIG_PARAMETER* param);
 
 static void bref_clear_state(backend_ref_t* bref, bref_state_t state);
 static void bref_set_state(backend_ref_t*   bref, bref_state_t state);
@@ -359,74 +351,158 @@ ROUTER_OBJECT* GetModuleObject()
         return &MyObject;
 }
 
-/**
- * Refresh the instance parameter max_slave_connections
- * 
- * @param router_instance	Router instance
- * @param config_param          Parameter to be reloaded
- * 
- */
-
-static void refresh_max_slave_connections(
-        ROUTER_INSTANCE     *router_instance,
-        CONFIG_PARAMETER    *config_param)
-{
-    int val;
-    config_param_type_t paramtype = config_get_paramtype(config_param);
-    bool success = config_get_valint(&val, config_param, NULL, paramtype);
-    if (COUNT_TYPE == paramtype && success) 
-    {
-        router_instance->rwsplit_config.rw_max_slave_conn_percent = 0;
-        router_instance->rwsplit_config.rw_max_slave_conn_count = val;
-    }
-    if (PERCENT_TYPE == paramtype && success) 
-    {
-        router_instance->rwsplit_config.rw_max_slave_conn_percent = val;
-        router_instance->rwsplit_config.rw_max_slave_conn_count = 0;
-    }
-}
 
 /**
- * Refresh the instance parameter max_slave_replication_lag
+ * Refresh the instance by the given parameter value.
  * 
- * @param router_instance	Router instance
- * @param config_param          Parameter to be reloaded
- * 
- */
-
-static void refresh_max_slave_replication_lag(
-        ROUTER_INSTANCE     *router_instance,
-        CONFIG_PARAMETER    *config_param)
-{
-    int val;
-    config_param_type_t paramtype = config_get_paramtype(config_param);
-    bool success = config_get_valint(&val, config_param, NULL, paramtype);
-    if (COUNT_TYPE == paramtype && success) 
-    {
-        router_instance->rwsplit_config.rw_max_slave_conn_count = val;
-    }
-}
-
-/**
- * Refresh the instance parameter use_sql_variables_in
- * 
- * @param router_instance	Router instance
- * @param config_param          Parameter to be reloaded
+ * @param router	Router instance
+ * @param singleparam	Parameter fo be reloaded
  * 
  * Note: this part is not done. Needs refactoring.
  */
-
-static void refresh_use_sql_variables_in(
-        ROUTER_INSTANCE     *router_instance,
-        CONFIG_PARAMETER    *config_param)
+static void refreshInstance(
+        ROUTER_INSTANCE*  router,
+        CONFIG_PARAMETER* singleparam)
 {
-    target_t valtarget;
-    config_param_type_t paramtype = config_get_paramtype(config_param);
-    bool success = config_get_valtarget(&valtarget, config_param, NULL, paramtype);
-    if (SQLVAR_TARGET_TYPE == paramtype && success) 
-    {
-        router_instance->rwsplit_config.rw_use_sql_variables_in = valtarget;
-    }
+        CONFIG_PARAMETER*   param;
+        bool                refresh_single;
+	config_param_type_t paramtype;
+	
+        if (singleparam != NULL)
+        {
+                param = singleparam;
+                refresh_single = true;
+        }
+        else
+        {
+                param = router->service->svc_config_param;
+                refresh_single = false;
+        }
+        paramtype = config_get_paramtype(param);
+	
+        while (param != NULL)         
+        {
+		/** Catch unused parameter types */
+		ss_dassert(paramtype == COUNT_TYPE || 
+			paramtype == PERCENT_TYPE ||
+			paramtype == SQLVAR_TARGET_TYPE);
+		
+                if (paramtype == COUNT_TYPE)
+                {
+                        if (strncmp(param->name, "max_slave_connections", MAX_PARAM_LEN) == 0)
+                        {
+				int  val;
+				bool succp;
+				
+                                router->rwsplit_config.rw_max_slave_conn_percent = 0;
+				
+				succp = config_get_valint(&val, param, NULL, paramtype);
+				
+				if (succp)
+				{
+					router->rwsplit_config.rw_max_slave_conn_count = val;
+				}
+                        }
+                        else if (strncmp(param->name, 
+                                        "max_slave_replication_lag", 
+                                        MAX_PARAM_LEN) == 0)
+                        {
+				int  val;
+				bool succp;
+				
+				succp = config_get_valint(&val, param, NULL, paramtype);
+				
+				if (succp)
+				{
+					router->rwsplit_config.rw_max_slave_replication_lag = val;
+				}
+			}
+                }
+                else if (paramtype == PERCENT_TYPE)
+                {
+                        if (strncmp(param->name, "max_slave_connections", MAX_PARAM_LEN) == 0)
+                        {
+				int  val;
+				bool succp;
+				
+                                router->rwsplit_config.rw_max_slave_conn_count = 0;
+                                
+				succp = config_get_valint(&val, param, NULL, paramtype);
+				
+				if (succp)
+				{
+					router->rwsplit_config.rw_max_slave_conn_percent = val;
+				}	
+                        }
+                }
+		else if (paramtype == SQLVAR_TARGET_TYPE)
+		{
+			if (strncmp(param->name, 
+				"use_sql_variables_in", 
+				MAX_PARAM_LEN) == 0)
+			{
+				target_t valtarget;
+				bool succp;
+				
+				succp = config_get_valtarget(&valtarget, param, NULL, paramtype);
+				
+				if (succp)
+				{
+					router->rwsplit_config.rw_use_sql_variables_in = valtarget;
+				}
+			}
+		}
+		
+                if (refresh_single)
+                {
+                        break;
+                }
+                param = param->next;
+        }
+        
+#if defined(NOT_USED) /*< can't read monitor config parameters */
+        if ((*router->servers)->backend_server->rlag == -2)
+        {
+                rlag_enabled = false;
+        }
+        else
+        {
+                rlag_enabled = true;
+        }
+        /** 
+         * If replication lag detection is not enabled the measure can't be
+         * used in slave selection.
+         */
+        if (!rlag_enabled)
+        {
+                if (rlag_limited)
+                {
+                        LOGIF(LE, (skygw_log_write_flush(
+                                LOGFILE_ERROR,
+                                "Warning : Configuration Failed, max_slave_replication_lag "
+                                "is set to %d,\n\t\t      but detect_replication_lag "
+                                "is not enabled. Replication lag will not be checked.",
+                                router->rwsplit_config.rw_max_slave_replication_lag)));
+                }
+            
+                if (router->rwsplit_config.rw_slave_select_criteria == 
+                        LEAST_BEHIND_MASTER)
+                {
+                        LOGIF(LE, (skygw_log_write_flush(
+                                LOGFILE_ERROR,
+                                "Warning : Configuration Failed, router option "
+                                "\n\t\t      slave_selection_criteria=LEAST_BEHIND_MASTER "
+                                "is specified, but detect_replication_lag "
+                                "is not enabled.\n\t\t      "
+                                "slave_selection_criteria=%s will be used instead.",
+                                STRCRITERIA(DEFAULT_CRITERIA))));
+                        
+                        router->rwsplit_config.rw_slave_select_criteria =
+                                DEFAULT_CRITERIA;
+                }
+        }
+#endif /*< NOT_USED */
+
 }
 
 /**
@@ -583,7 +659,7 @@ createInstance(SERVICE *service, char **options)
 	router->semantics.timeout = 0;
 	router->semantics.on_error = SERR_DROP;
 	
-        /** Call this before refreshing parameters */
+        /** Call this before refreshInstance */
 	if (options)
 	{
                 rwsplit_process_router_options(router, options);
@@ -607,7 +683,7 @@ createInstance(SERVICE *service, char **options)
         
         if (param != NULL)
         {
-                refresh_max_slave_connections(router, param);
+                refreshInstance(router, param);
         }
         /** 
          * Read default value for slave replication lag upper limit and then
@@ -618,7 +694,7 @@ createInstance(SERVICE *service, char **options)
         
         if (param != NULL)
         {
-                refresh_max_slave_replication_lag(router, param);
+                refreshInstance(router, param);
         }
         router->rwsplit_version = service->svc_config_version;
 	/** Set default values */
@@ -627,7 +703,7 @@ createInstance(SERVICE *service, char **options)
 
 	if (param != NULL)
 	{
-		refresh_use_sql_variables_in(router, param);
+		refreshInstance(router, param);
 	}
         /**
          * We have completed the creation of the router data, so now
