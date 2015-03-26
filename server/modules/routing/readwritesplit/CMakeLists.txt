@@ -1,7 +1,7 @@
 add_library(readwritesplit SHARED readwritesplit.c)
 target_link_libraries(readwritesplit ssl pthread log_manager utils query_classifier)
 install(TARGETS readwritesplit DESTINATION modules)
-add_library(readwritesplit2 SHARED readwritesplit2.c)
+add_library(readwritesplit2 SHARED readwritesplit2.c rws_session.c rws_error.c rws_utils.c rws_routing.c)
 target_link_libraries(readwritesplit2 ssl pthread log_manager utils query_classifier)
 install(TARGETS readwritesplit2 DESTINATION modules)
 if(BUILD_TESTS)

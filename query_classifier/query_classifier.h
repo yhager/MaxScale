@@ -1,3 +1,5 @@
+#ifndef QUERY_CLASSIFIER_HG
+#define QUERY_CLASSIFIER_HG
 /*
 This file is distributed as part of the MariaDB Corporation MaxScale. It is free
 software: you can redistribute it and/or modify it under the terms of the
@@ -103,7 +105,6 @@ char*           skygw_query_classifier_get_stmtname(GWBUF* buf);
 char*		skygw_get_created_table_name(GWBUF* querybuf);
 bool		is_drop_table_query(GWBUF* querybuf);
 bool		skygw_is_real_query(GWBUF* querybuf);
-bool		skygw_is_session_command(GWBUF* querybuf);
 char**		skygw_get_table_names(GWBUF* querybuf, int* tblsize, bool fullnames);
 char*           skygw_get_canonical(GWBUF* querybuf);
 bool            parse_query (GWBUF* querybuf);
@@ -114,6 +115,7 @@ bool			skygw_query_has_clause(GWBUF* buf);
 char*           skygw_get_qtype_str(skygw_query_type_t qtype);
 char*			skygw_get_affected_fields(GWBUF* buf);
 char** skygw_get_database_names(GWBUF* querybuf,int* size);
-
+bool skygw_is_session_command(GWBUF* buf);
 EXTERN_C_BLOCK_END
 
+#endif

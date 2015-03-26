@@ -13,53 +13,19 @@
  * this program; if not, write to the Free Software Foundation, Inc., 51
  * Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
- * Copyright MariaDB Corporation Ab 2014
+ * Copyright MariaDB Corporation Ab 2013-2014
  */
 
-/**
- * @file readwriteroutersession.c  - The MaxScale read-write router session class
- *
- * When a MaxScale service is created from a definition in the configuration
- * file, a router is specified and a router instance is also created.
- * 
- * When a user connects to the service, a router session is created, and this
- * class represents the router session. 
- *
- * @verbatim
- * Revision History
- *
- * Date		Who			Description
- * 04/03/15	Martin Brampton
- *              and Markus Makela	Initial implementation
- *
- * @endverbatim
- */
-
-#include <my_config.h>
-#include <stdio.h>
-#include <strings.h>
-#include <string.h>
-#include <stdlib.h>
-#include <stdint.h>
-
-#include <router.h>
-#include <readwritesplit2.h>
 #include <readwritesplitsession.h>
-
-#include <mysql.h>
-#include <skygw_utils.h>
-#include <log_manager.h>
-#include <dcb.h>
-#include <spinlock.h>
-#include <modinfo.h>
-#include <modutil.h>
-#include <mysql_client_server_protocol.h>
+#include <readwritesplit2.h>
 
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
 extern size_t         log_ses_count[];
 extern __thread       log_info_t tls_log_info;
 
+bool rses_begin_locked_router_action(
+        ROUTER_CLIENT_SES* rses);
 /**
  * Associate a new session with this instance of the router.
  *
@@ -70,7 +36,7 @@ extern __thread       log_info_t tls_log_info;
  * @param session	The session itself
  * @return Session specific data for this session
  */
-static void* newSession(
+ void* handle_newSession(
         ROUTER*  router_inst,
         SESSION* session)
 {
@@ -258,7 +224,7 @@ return_rses:
  * @param instance	The router instance data
  * @param session	The session being closed
  */
-static void closeSession(
+ void handle_closeSession(
         ROUTER* instance,
         void*   router_session)
 {
@@ -341,7 +307,7 @@ static void closeSession(
  * @param router_client_session	Client session
  * 
  */
-static void freeSession(
+void handle_freeSession(
         ROUTER* router_instance,
         void*   router_client_session)
 {
@@ -394,4 +360,180 @@ static void freeSession(
         free(router_cli_ses->rses_backend_ref);
 	free(router_cli_ses);
         return;
+}
+
+
+/**
+ * Get client DCB pointer of the router client session.
+ * This routine must be protected by Router client session lock.
+ * 
+ * @param rses	Router client session pointer
+ * 
+ * @return Pointer to client DCB
+ */
+DCB* rses_get_client_dcb(
+	ROUTER_CLIENT_SES* rses)
+{
+	DCB*	dcb = NULL;
+	int	i;
+	
+	for (i=0; i<rses->rses_nbackends; i++)
+	{
+		if ((dcb = rses->rses_backend_ref[i].bref_dcb) != NULL &&
+			BREF_IS_IN_USE(&rses->rses_backend_ref[i]) &&
+			dcb->session != NULL &&
+			dcb->session->client != NULL)
+		{
+			return dcb->session->client;
+		}
+	}
+	return NULL;
+}
+
+/** 
+ * Create a generic router session property strcture.
+ */
+rses_property_t* rses_property_init(
+	rses_property_type_t prop_type)
+{
+	rses_property_t* prop;
+	
+	prop = (rses_property_t*)calloc(1, sizeof(rses_property_t));
+	if (prop == NULL)
+	{
+		goto return_prop;
+	}
+	prop->rses_prop_type = prop_type;
+#if defined(SS_DEBUG)
+	prop->rses_prop_chk_top = CHK_NUM_ROUTER_PROPERTY;
+	prop->rses_prop_chk_tail = CHK_NUM_ROUTER_PROPERTY;
+#endif
+	
+return_prop:
+	CHK_RSES_PROP(prop);
+	return prop;
+}
+
+/**
+ * Property is freed at the end of router client session.
+ */
+void rses_property_done(
+	rses_property_t* prop)
+{
+	CHK_RSES_PROP(prop);
+	
+	switch (prop->rses_prop_type) {
+	case RSES_PROP_TYPE_SESCMD:
+		//mysql_sescmd_done(&prop->rses_prop_data.sescmd);
+		break;
+		
+	case RSES_PROP_TYPE_TMPTABLES:
+		hashtable_free(prop->rses_prop_data.temp_tables);
+		break;
+		
+	default:
+		LOGIF(LD, (skygw_log_write(
+                                   LOGFILE_DEBUG,
+                                   "%lu [rses_property_done] Unknown property type %d "
+                                   "in property %p",
+                                   pthread_self(),
+                                   prop->rses_prop_type,
+                                   prop)));
+		
+		ss_dassert(false);
+		break;
+	}
+	free(prop);
+}
+
+/**
+ * Add property to the router_client_ses structure's rses_properties
+ * array. The slot is determined by the type of property.
+ * In each slot there is a list of properties of similar type.
+ * 
+ * Router client session must be locked.
+ */
+void rses_property_add(
+        ROUTER_CLIENT_SES* rses,
+        rses_property_t*   prop)
+{
+        rses_property_t* p;
+        
+        CHK_CLIENT_RSES(rses);
+        CHK_RSES_PROP(prop);
+        ss_dassert(SPINLOCK_IS_LOCKED(&rses->rses_lock));
+        
+        prop->rses_prop_rsession = rses;
+        p = rses->rses_properties[prop->rses_prop_type];
+        
+        if (p == NULL)
+        {
+                rses->rses_properties[prop->rses_prop_type] = prop;
+        }
+        else
+        {
+                while (p->rses_prop_next != NULL)
+                {
+                        p = p->rses_prop_next;
+                }
+                p->rses_prop_next = prop;
+        }
+}
+
+/** 
+ * @node Acquires lock to router client session if it is not closed.
+ *
+ * Parameters:
+ * @param rses - in, use
+ *          
+ *
+ * @return true if router session was not closed. If return value is true
+ * it means that router is locked, and must be unlocked later. False, if
+ * router was closed before lock was acquired.
+ *
+ * 
+ * @details (write detailed description here)
+ *
+ */
+bool rses_begin_locked_router_action(
+        ROUTER_CLIENT_SES* rses)
+{
+        bool succp = false;
+        
+        CHK_CLIENT_RSES(rses);
+
+        if (rses->rses_closed) {
+                
+                goto return_succp;
+        }       
+        spinlock_acquire(&rses->rses_lock);
+        if (rses->rses_closed) {
+                spinlock_release(&rses->rses_lock);
+                goto return_succp;
+        }       
+        succp = true;
+        
+return_succp:
+        return succp;
+}
+
+/** to be inline'd */
+/** 
+ * @node Releases router client session lock.
+ *
+ * Parameters:
+ * @param rses - <usage>
+ *          <description>
+ *
+ * @return void
+ *
+ * 
+ * @details (write detailed description here)
+ *
+ */
+void rses_end_locked_router_action(
+        ROUTER_CLIENT_SES* rses)
+{
+        CHK_CLIENT_RSES(rses);
+        spinlock_release(&rses->rses_lock);
 }

@@ -28,51 +28,10 @@
  *
  * @endverbatim
  */
-
-#include <dcb.h>
-#include <hashtable.h>
-#include <sescmd.h>
-#include <query_classifier.h>
-typedef enum bref_state {
-        BREF_IN_USE           = 0x01,
-        BREF_WAITING_RESULT   = 0x02, /*< for session commands only */
-        BREF_QUERY_ACTIVE     = 0x04, /*< for other queries */
-        BREF_CLOSED           = 0x08
-} bref_state_t;
-
-#define BREF_IS_NOT_USED(s)         ((s)->bref_state & ~BREF_IN_USE)
-#define BREF_IS_IN_USE(s)           ((s)->bref_state & BREF_IN_USE)
-#define BREF_IS_WAITING_RESULT(s)   ((s)->bref_num_result_wait > 0)
-#define BREF_IS_QUERY_ACTIVE(s)     ((s)->bref_state & BREF_QUERY_ACTIVE)
-#define BREF_IS_CLOSED(s)           ((s)->bref_state & BREF_CLOSED)
-
-typedef enum backend_type_t {
-        BE_UNDEFINED=-1, 
-        BE_MASTER, 
-        BE_JOINED = BE_MASTER,
-        BE_SLAVE,
-        BE_COUNT
-} backend_type_t;
+#include <readwritesplit2.h>
 
 struct router_instance;
-
-typedef enum {
-	TARGET_UNDEFINED    = 0x00,
-        TARGET_MASTER       = 0x01,
-        TARGET_SLAVE        = 0x02,
-        TARGET_NAMED_SERVER = 0x04,
-        TARGET_ALL          = 0x08,
-        TARGET_RLAG_MAX     = 0x10
-} route_target_t;
-
-#define TARGET_IS_MASTER(t)       (t & TARGET_MASTER)
-#define TARGET_IS_SLAVE(t)        (t & TARGET_SLAVE)
-#define TARGET_IS_NAMED_SERVER(t) (t & TARGET_NAMED_SERVER)
-#define TARGET_IS_ALL(t)          (t & TARGET_ALL)
-#define TARGET_IS_RLAG_MAX(t)     (t & TARGET_RLAG_MAX)
-
-typedef struct rses_property_st rses_property_t;
-typedef struct router_client_session ROUTER_CLIENT_SES;
+struct router_client_session;
 
 typedef enum rses_property_type_t {
         RSES_PROP_TYPE_UNDEFINED=-1,
@@ -83,43 +42,19 @@ typedef enum rses_property_type_t {
 	RSES_PROP_TYPE_COUNT=RSES_PROP_TYPE_LAST+1
 } rses_property_type_t;
 
+typedef enum bref_state {
+        BREF_IN_USE           = 0x01,
+        BREF_WAITING_RESULT   = 0x02, /*< for session commands only */
+        BREF_QUERY_ACTIVE     = 0x04, /*< for other queries */
+        BREF_CLOSED           = 0x08
+} bref_state_t;
 
+typedef struct router_client_session  ROUTER_CLIENT_SES;
 
-/**
- * This criteria is used when backends are chosen for a router session's use.
- * Backend servers are sorted to ascending order according to the criteria
- * and top N are chosen.
- */
-typedef enum select_criteria {
-        UNDEFINED_CRITERIA=0,
-        LEAST_GLOBAL_CONNECTIONS, /*< all connections established by MaxScale */
-        LEAST_ROUTER_CONNECTIONS, /*< connections established by this router */
-        LEAST_BEHIND_MASTER,
-        LEAST_CURRENT_OPERATIONS,
-        DEFAULT_CRITERIA=LEAST_CURRENT_OPERATIONS,
-        LAST_CRITERIA /*< not used except for an index */
-} select_criteria_t;
-
-
-/** default values for rwsplit configuration parameters */
-#define CONFIG_MAX_SLAVE_CONN 1
-#define CONFIG_MAX_SLAVE_RLAG -1 /*< not used */
-#define CONFIG_SQL_VARIABLES_IN TYPE_ALL
-
-#define GET_SELECT_CRITERIA(s)                                                                  \
-        (strncmp(s,"LEAST_GLOBAL_CONNECTIONS", strlen("LEAST_GLOBAL_CONNECTIONS")) == 0 ?       \
-        LEAST_GLOBAL_CONNECTIONS : (                                                            \
-        strncmp(s,"LEAST_BEHIND_MASTER", strlen("LEAST_BEHIND_MASTER")) == 0 ?                  \
-        LEAST_BEHIND_MASTER : (                                                                 \
-        strncmp(s,"LEAST_ROUTER_CONNECTIONS", strlen("LEAST_ROUTER_CONNECTIONS")) == 0 ?        \
-        LEAST_ROUTER_CONNECTIONS : (                                                            \
-        strncmp(s,"LEAST_CURRENT_OPERATIONS", strlen("LEAST_CURRENT_OPERATIONS")) == 0 ?        \
-        LEAST_CURRENT_OPERATIONS : UNDEFINED_CRITERIA))))
-        
 /**
  * Property structure
  */
-struct rses_property_st {
+typedef struct rses_property_st {
 #if defined(SS_DEBUG)
         skygw_chk_t          rses_prop_chk_top;
 #endif
@@ -129,39 +64,11 @@ struct rses_property_st {
         union rses_prop_data {
 		HASHTABLE*	temp_tables;
         } rses_prop_data;
-        rses_property_t*     rses_prop_next; /*< next property of same type */
+        struct rses_property_st*     rses_prop_next; /*< next property of same type */
 #if defined(SS_DEBUG)
         skygw_chk_t          rses_prop_chk_tail;
 #endif
-};
-
-/**
- * Internal structure used to define the set of backend servers we are routing
- * connections to. This provides the storage for routing module specific data
- * that is required for each of the backend servers.
- * 
- * Owned by router_instance, referenced by each routing session.
- */
-typedef struct backend_st {
-#if defined(SS_DEBUG)
-        skygw_chk_t     be_chk_top;
-#endif
-        SERVER*         backend_server;      /*< The server itself */
-        int             backend_conn_count;  /*< Number of connections to
-					      *  the server
-					      */
-        bool            be_valid; 	     /*< Valid when belongs to the
-					      *  router's configuration
-					      */
-	int		weight;		     /*< Desired weighting on the
-					      *  load. Expressed in .1%
-					      * increments
-					      */
-#if defined(SS_DEBUG)
-        skygw_chk_t     be_chk_tail;
-#endif
-} BACKEND;
-
+}rses_property_t;
 
 /**
  * Reference to BACKEND.
@@ -182,15 +89,7 @@ typedef struct backend_ref_st {
 #endif
 } backend_ref_t;
 
-
-typedef struct rwsplit_config_st {
-        int               rw_max_slave_conn_percent;
-        int               rw_max_slave_conn_count;
-        select_criteria_t rw_slave_select_criteria;
-        int               rw_max_slave_replication_lag;
-	target_t          rw_use_sql_variables_in;	
-} rwsplit_config_t;
-     
+   
 /**
  * The client session structure used within this router.
  */
@@ -218,9 +117,5 @@ struct router_client_session {
         skygw_chk_t      rses_chk_tail;
 #endif
 } ROUTER_SESSION;
-
-#define BACKEND_TYPE(b) (SERVER_IS_MASTER((b)->backend_server) ? BE_MASTER :    \
-        (SERVER_IS_SLAVE((b)->backend_server) ? BE_SLAVE :  BE_UNDEFINED));
-
     
 #endif /*< _RWSPLITROUTERSESSION_H */
