@@ -571,6 +571,35 @@ static bool resolve_maxscale_conf_fname(
                                  goto return_succp;
                          }                        
                 }
+		else
+		{
+		    /** Look in /etc/ for MaxScale.cnf */
+
+		    *cnf_full_path = get_expanded_pathname(NULL, "/", default_cnf_fname);
+		    
+		    if (*cnf_full_path != NULL)
+		    {
+			/** Remove extra '/' */
+			int len = strlen(*cnf_full_path) - 1;
+			memmove(*cnf_full_path,(*cnf_full_path) + 1,len);
+			memset((*cnf_full_path) + len,0,1);
+			
+			if (file_is_readable(*cnf_full_path))
+			{
+			    succp = true;
+			    goto return_succp;
+			}
+			else
+			{
+			    char* logstr = "Found config file but wasn't "
+			    "able to read it.";
+			    int eno = errno;
+			    print_log_n_stderr(true, true, logstr, logstr, eno);
+			    goto return_succp;
+			}
+		    }
+		}
+
                 goto return_succp;
         }
 return_succp:
@@ -950,7 +979,7 @@ static char* get_expanded_pathname(
                 }
                 snprintf(cnf_file_buf, pathlen, "%s/%s", expanded_path, fname);
 
-                if (!file_is_readable(cnf_file_buf))
+		if (!file_is_readable(cnf_file_buf))
                 {
                         free(expanded_path);
                         free(cnf_file_buf);
