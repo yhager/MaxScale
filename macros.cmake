@@ -1,3 +1,4 @@
+
 function(debugmsg MSG)
   if(DEBUG_OUTPUT)
 	message(STATUS "DEBUG: ${MSG}")
@@ -8,17 +9,14 @@ macro(set_maxscale_version)
 
   #MaxScale version number
   set(MAXSCALE_VERSION_MAJOR "1")
-  set(MAXSCALE_VERSION_MINOR "0")
-  set(MAXSCALE_VERSION_PATCH "5") 
+  set(MAXSCALE_VERSION_MINOR "1")
+  set(MAXSCALE_VERSION_PATCH "0") 
   set(MAXSCALE_VERSION_NUMERIC "${MAXSCALE_VERSION_MAJOR}.${MAXSCALE_VERSION_MINOR}.${MAXSCALE_VERSION_PATCH}")
-  set(MAXSCALE_VERSION "${MAXSCALE_VERSION_MAJOR}.${MAXSCALE_VERSION_MINOR}.${MAXSCALE_VERSION_PATCH}-unstable")
+  set(MAXSCALE_VERSION "${MAXSCALE_VERSION_MAJOR}.${MAXSCALE_VERSION_MINOR}.${MAXSCALE_VERSION_PATCH}")
 
 endmacro()
 
 macro(set_variables)
-
-  # Build type
-  set(BUILD_TYPE "None" CACHE STRING "Build type, possible values are:None, Debug, DebugSymbols, Optimized.")
   
   # hostname or IP address of MaxScale's host
   set(TEST_HOST "127.0.0.1" CACHE STRING "hostname or IP address of MaxScale's host")
@@ -28,6 +26,9 @@ macro(set_variables)
 
   # port of read/write split router module
   set(TEST_PORT_RW "4006" CACHE STRING "port of read/write split router module")
+
+  # port of schemarouter router module
+  set(TEST_PORT_DB "4010" CACHE STRING "port of schemarouter router module")
 
   # port of read/write split router module with hints
   set(TEST_PORT_RW_HINT "4009" CACHE STRING "port of read/write split router module with hints")
@@ -43,21 +44,27 @@ macro(set_variables)
 
   # password of MaxScale user
   set(TEST_PASSWORD "maxpwd" CACHE STRING "password of MaxScale user")
-  
+
   # Use static version of libmysqld
   set(STATIC_EMBEDDED TRUE CACHE BOOL "Use static version of libmysqld")
-  
+
   # Build RabbitMQ components
   set(BUILD_RABBITMQ FALSE CACHE BOOL "Build RabbitMQ components")
   
+  # Build the binlog router
+  set(BUILD_BINLOG TRUE CACHE BOOL "Build binlog router")
+
   # Use gcov build flags
   set(GCOV FALSE CACHE BOOL "Use gcov build flags")
 
   # Install init.d scripts and ldconf configuration files
-  set(INSTALL_SYSTEM_FILES TRUE CACHE BOOL "Install init.d scripts and ldconf configuration files")
+  set(WITH_SCRIPTS TRUE CACHE BOOL "Install init.d scripts and ldconf configuration files")
 
   # Build tests
   set(BUILD_TESTS FALSE CACHE BOOL "Build tests")
+
+  # Build packages
+  set(PACKAGE FALSE CACHE BOOL "Enable package building (this disables local installation of system files)")
 
 endmacro()
 
@@ -92,6 +99,7 @@ macro(check_dirs)
   
   if(DEFINED MYSQL_DIR)
 	debugmsg("Searching for MySQL headers at: ${MYSQL_DIR}")
+    list(APPEND CMAKE_INCLUDE_PATH ${MYSQL_DIR})
 	find_path(MYSQL_DIR_LOC mysql.h PATHS ${MYSQL_DIR} PATH_SUFFIXES mysql mariadb NO_DEFAULT_PATH)
   else()
 	find_path(MYSQL_DIR_LOC mysql.h PATH_SUFFIXES mysql mariadb)

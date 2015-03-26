@@ -1,9 +1,19 @@
 ## Example MaxScale.cnf configuration file
 #
+# Global parameters
+#
 # Number of worker threads in MaxScale
 #
 # 	threads=<number of threads>
 #
+# Enabled logfiles. The message log is enabled by default and
+# the error log is always enabled.
+#
+# log_messages=<1|0>
+# log_trace=<1|0>
+# log_debug=<1|0>
+## Example:
+
 [maxscale]
 threads=4
 
@@ -171,6 +181,12 @@ replace=select
 #
 #	router_options=
 #	slave_selection_criteria=[LEAST_CURRENT_OPERATIONS|LEAST_BEHIND_MASTER]
+#
+# router_options=max_sescmd_history specifies a limit on the number of 'session commands'
+# a single session can execute. Please refer to the configuration guide for more details - optional.
+#
+#	router_options=
+#	max_sescmd_history=2500
 #
 # max_slave_connections specifies how many slaves a router session can 
 # connect to - optional.

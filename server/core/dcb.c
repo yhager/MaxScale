@@ -70,6 +70,7 @@
 #include <skygw_utils.h>
 #include <log_manager.h>
 #include <hashtable.h>
+#include <hk_heartbeat.h>
 
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
@@ -651,7 +652,7 @@ int             rc;
 	}
 	memcpy(&(dcb->func), funcs, sizeof(GWPROTOCOL));
 
-        /*<
+        /**
          * Link dcb to session. Unlink is called in dcb_final_free
          */
 	if (!session_link_dcb(session, dcb))
@@ -693,22 +694,28 @@ int             rc;
                         session->client->fd)));
         }
         ss_dassert(dcb->fd == DCBFD_CLOSED); /*< must be uninitialized at this point */
-        /*<
+        /**
          * Successfully connected to backend. Assign file descriptor to dcb
          */
         dcb->fd = fd;
+
+	/**
+	 * Add server pointer to dcb
+	 */
+        dcb->server = server;
+
         /** Copy status field to DCB */
         dcb->dcb_server_status = server->status;
         ss_debug(dcb->dcb_port = server->port;)
         
-	/*<
+	/**
 	 * backend_dcb is connected to backend server, and once backend_dcb
          * is added to poll set, authentication takes place as part of 
 	 * EPOLLOUT event that will be received once the connection
 	 * is established.
 	 */
         
-        /*<
+        /**
          * Add the dcb in the poll set
          */
         rc = poll_add_dcb(dcb);
@@ -718,12 +725,12 @@ int             rc;
                 dcb_final_free(dcb);
                 return NULL;
         }
-	/*<
+	/**
 	 * The dcb will be addded into poll set by dcb->func.connect
 	 */
 	atomic_add(&server->stats.n_connections, 1);
 	atomic_add(&server->stats.n_current, 1);
-        
+
 	return dcb;
 }
 
@@ -796,7 +803,8 @@ int dcb_read(
                                 
                                 if (r <= 0 && 
                                         l_errno != EAGAIN && 
-                                        l_errno != EWOULDBLOCK) 
+                                        l_errno != EWOULDBLOCK &&
+					l_errno != 0) 
                                 {
                                         n = -1;
                                         goto return_n;
@@ -810,6 +818,9 @@ int dcb_read(
                         n = 0;
                         goto return_n;
                 }
+
+		dcb->last_read = hkheartbeat;
+
                 bufsize = MIN(b, MAX_BUFFER_SIZE);
                 
                 if ((buffer = gwbuf_alloc(bufsize)) == NULL)
@@ -1218,7 +1229,7 @@ dcb_close(DCB *dcb)
 				"%lu [dcb_close]",
 				pthread_self())));                                
 	
-        /*<
+        /**
          * dcb_close may be called for freshly created dcb, in which case
          * it only needs to be freed.
          */
@@ -1576,8 +1587,10 @@ va_list	args;
 int
 dcb_isclient(DCB *dcb)
 {
-	if(dcb->session) {
-		if (dcb->session->client) {
+	if (dcb->state != DCB_STATE_LISTENING && dcb->session)
+	{
+		if (dcb->session->client)
+		{
 			return (dcb->session && dcb == dcb->session->client);
 		}
 	}
@@ -2075,12 +2088,12 @@ dcb_get_next (DCB* dcb)
 }        
 
 /**
- * Call all the callbacks on all DCB's that match the reason given
+ * Call all the callbacks on all DCB's that match the server and the reason given
  *
  * @param reason	The DCB_REASON that triggers the callback
  */
 void
-dcb_call_foreach(DCB_REASON reason)
+dcb_call_foreach(struct server* server, DCB_REASON reason)
 {
 	LOGIF(LD, (skygw_log_write(LOGFILE_DEBUG,
 				"%lu [dcb_call_foreach]",
@@ -2100,7 +2113,8 @@ dcb_call_foreach(DCB_REASON reason)
                         
                         while (dcb != NULL)
                         {
-                                if (dcb->state == DCB_STATE_POLLING)
+                                if (dcb->state == DCB_STATE_POLLING && dcb->server &&
+				    strcmp(dcb->server->unique_name,server->unique_name) == 0)
                                 {
                                         dcb_call_callback(dcb, DCB_REASON_NOT_RESPONDING);
                                 }
@@ -2160,4 +2174,53 @@ static int
 dcb_null_auth(DCB *dcb, SERVER *server, SESSION *session, GWBUF *buf)
 {
 	return 0;
+}
+
+/**
+ * Return DCB counts optionally filtered by usage
+ *
+ * @param	usage	The usage of the DCB
+ * @return	A count of DCBs in the desired state
+ */
+int
+dcb_count_by_usage(DCB_USAGE usage)
+{
+int	rval = 0;
+DCB	*ptr;
+
+	spinlock_acquire(&dcbspin);
+	ptr = allDCBs;
+	while (ptr)
+	{
+		switch (usage)
+		{
+		case DCB_USAGE_CLIENT:
+			if (dcb_isclient(ptr))
+				rval++;
+			break;
+		case DCB_USAGE_LISTENER:
+			if (ptr->state == DCB_STATE_LISTENING)
+				rval++;
+			break;
+		case DCB_USAGE_BACKEND:
+			if (dcb_isclient(ptr) == 0
+					&& ptr->dcb_role == DCB_ROLE_REQUEST_HANDLER)
+				rval++;
+			break;
+		case DCB_USAGE_INTERNAL:
+			if (ptr->dcb_role == DCB_ROLE_REQUEST_HANDLER)
+				rval++;
+			break;
+		case DCB_USAGE_ZOMBIE:
+			if (DCB_ISZOMBIE(ptr))
+				rval++;
+			break;
+		case DCB_USAGE_ALL:
+			rval++;
+			break;
+		}
+		ptr = ptr->next;
+	}
+	spinlock_release(&dcbspin);
+	return rval;
 }

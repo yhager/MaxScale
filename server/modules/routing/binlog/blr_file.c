@@ -62,7 +62,7 @@ static void blr_log_header(logfile_id_t file, char *msg, uint8_t *ptr);
 
 /**
  * Initialise the binlog file for this instance. MaxScale will look
- * for all the binlogs that it has on local disk, determien the next
+ * for all the binlogs that it has on local disk, determine the next
  * binlog to use and initialise it for writing, determining the 
  * next record to be fetched from the real master.
  *
@@ -71,7 +71,7 @@ static void blr_log_header(logfile_id_t file, char *msg, uint8_t *ptr);
 int
 blr_file_init(ROUTER_INSTANCE *router)
 {
-char		*ptr, path[1024], filename[1050];
+char		*ptr, path[PATH_MAX], filename[PATH_MAX];
 int		file_found, n = 1;
 int		root_len, i;
 DIR		*dirp;
@@ -79,13 +79,13 @@ struct dirent	*dp;
 
 	if (router->binlogdir == NULL)
 	{
-		strcpy(path, "/usr/local/skysql/MaxScale");
+		strcpy(path, "/usr/local/mariadb-maxscale");
 		if ((ptr = getenv("MAXSCALE_HOME")) != NULL)
 		{
-			strcpy(path, ptr);
+			strncpy(path, ptr,PATH_MAX);
 		}
-		strcat(path, "/");
-		strcat(path, router->service->name);
+		strncat(path, "/",PATH_MAX);
+		strncat(path, router->service->name,PATH_MAX);
 
 		if (access(path, R_OK) == -1)
 			mkdir(path, 0777);
@@ -94,7 +94,7 @@ struct dirent	*dp;
 	}
 	else
 	{
-		strncpy(path, router->binlogdir, 1024);
+		strncpy(path, router->binlogdir, PATH_MAX);
 	}
 	if (access(router->binlogdir, R_OK) == -1)
 	{
@@ -128,7 +128,7 @@ struct dirent	*dp;
 
 	file_found = 0;
 	do {
-		sprintf(filename, "%s/" BINLOG_NAMEFMT, path, router->fileroot, n);
+		snprintf(filename,PATH_MAX, "%s/" BINLOG_NAMEFMT, path, router->fileroot, n);
 		if (access(filename, R_OK) != -1)
 		{
 			file_found  = 1;
@@ -142,16 +142,16 @@ struct dirent	*dp;
 	if (n == 0)		// No binlog files found
 	{
 		if (router->initbinlog)
-			sprintf(filename, BINLOG_NAMEFMT, router->fileroot,
+			snprintf(filename,PATH_MAX, BINLOG_NAMEFMT, router->fileroot,
 						router->initbinlog);
 		else
-			sprintf(filename, BINLOG_NAMEFMT, router->fileroot, 1);
+			snprintf(filename,PATH_MAX, BINLOG_NAMEFMT, router->fileroot, 1);
 		if (! blr_file_create(router, filename))
 			return 0;
 	}
 	else
 	{
-		sprintf(filename, BINLOG_NAMEFMT, router->fileroot, n);
+		snprintf(filename,PATH_MAX, BINLOG_NAMEFMT, router->fileroot, n);
 		blr_file_append(router, filename);
 	}
 	return 1;
@@ -196,7 +196,7 @@ unsigned char	magic[] = BINLOG_MAGIC;
 	fsync(fd);
 	close(router->binlog_fd);
 	spinlock_acquire(&router->binlog_lock);
-	strcpy(router->binlog_name, file);
+	strncpy(router->binlog_name, file,BINLOG_FNAMELEN);
 	router->binlog_position = 4;			/* Initial position after the magic number */
 	spinlock_release(&router->binlog_lock);
 	router->binlog_fd = fd;
@@ -230,7 +230,7 @@ int		fd;
 	fsync(fd);
 	close(router->binlog_fd);
 	spinlock_acquire(&router->binlog_lock);
-	strcpy(router->binlog_name, file);
+	strncpy(router->binlog_name, file,BINLOG_FNAMELEN);
 	router->binlog_position = lseek(fd, 0L, SEEK_END);
 	spinlock_release(&router->binlog_lock);
 	router->binlog_fd = fd;
@@ -290,7 +290,7 @@ blr_file_flush(ROUTER_INSTANCE *router)
 BLFILE *
 blr_open_binlog(ROUTER_INSTANCE *router, char *binlog)
 {
-char		*ptr, path[1024];
+char		path[1025];
 BLFILE		*file;
 
 	spinlock_acquire(&router->fileslock);
@@ -310,14 +310,14 @@ BLFILE		*file;
 		spinlock_release(&router->fileslock);
 		return NULL;
 	}
-	strcpy(file->binlogname, binlog);
+	strncpy(file->binlogname, binlog,BINLOG_FNAMELEN+1);
 	file->refcnt = 1;
 	file->cache = 0;
 	spinlock_init(&file->lock);
 
-	strcpy(path, router->binlogdir);
-	strcat(path, "/");
-	strcat(path, binlog);
+	strncpy(path, router->binlogdir,1024);
+	strncat(path, "/",1024);
+	strncat(path, binlog,1024);
 
 	if ((file->fd = open(path, O_RDONLY, 0666)) == -1)
 	{
@@ -354,6 +354,10 @@ int		n;
 unsigned long	filelen = 0;
 struct	stat	statb;
 
+	if (!file)
+	{
+		return NULL;
+	}
 	if (fstat(file->fd, &statb) == 0)
 		filelen = statb.st_size;
 	if (pos >= filelen)
@@ -612,4 +616,109 @@ struct	stat	statb;
 	if (fstat(file->fd, &statb) == 0)
 		return statb.st_size;
 	return 0;
+}
+
+
+/**
+ * Write the response packet to a cache file so that MaxScale can respond
+ * even if there is no master running when MaxScale starts.
+ *
+ * @param router	The instance of the router
+ * @param response	The name of the response, used to name the cached file
+ * @param buf		The buffer to written to the cache
+ */
+void
+blr_cache_response(ROUTER_INSTANCE *router, char *response, GWBUF *buf)
+{
+char	path[4097], *ptr;
+int	fd;
+
+	strcpy(path, "/usr/local/mariadb-maxscale");
+	if ((ptr = getenv("MAXSCALE_HOME")) != NULL)
+	{
+		strncpy(path, ptr, 4096);
+	}
+	strncat(path, "/", 4096);
+	strncat(path, router->service->name, 4096);
+
+	if (access(path, R_OK) == -1)
+		mkdir(path, 0777);
+	strncat(path, "/.cache", 4096);
+	if (access(path, R_OK) == -1)
+		mkdir(path, 0777);
+	strncat(path, "/", 4096);
+	strncat(path, response, 4096);
+
+	if ((fd = open(path, O_WRONLY|O_CREAT|O_TRUNC, 0666)) == -1)
+		return;
+	write(fd, GWBUF_DATA(buf), GWBUF_LENGTH(buf));
+	close(fd);
+}
+
+/**
+ * Read a cached copy of a master response message. This allows
+ * the router to start and serve any binlogs it already has on disk
+ * if the master is not available.
+ *
+ * @param router	The router instance structure
+ * @param response	The name of the response
+ * @return A pointer to a GWBUF structure
+ */
+GWBUF *
+blr_cache_read_response(ROUTER_INSTANCE *router, char *response)
+{
+struct	stat	statb;
+char	path[4097], *ptr;
+int	fd;
+GWBUF	*buf;
+
+	strcpy(path, "/usr/local/mariadb-maxscale");
+	if ((ptr = getenv("MAXSCALE_HOME")) != NULL)
+	{
+		strncpy(path, ptr, 4096);
+	}
+	strncat(path, "/", 4096);
+	strncat(path, router->service->name, 4096);
+	strncat(path, "/.cache/", 4096);
+	strncat(path, response, 4096);
+
+	if ((fd = open(path, O_RDONLY)) == -1)
+		return NULL;
+
+	if (fstat(fd, &statb) != 0)
+	{
+		close(fd);
+		return NULL;
+	}
+	if ((buf = gwbuf_alloc(statb.st_size)) == NULL)
+	{
+		close(fd);
+		return NULL;
+	}
+	read(fd, GWBUF_DATA(buf), statb.st_size);
+	close(fd);
+	return buf;
+}
+
+/**
+ * Does the next binlog file in the sequence for the slave exist.
+ *
+ * @param router	The router instance
+ * @param slave		The slave in question
+ * @retuen 		0 if the next file does not exist
+ */
+int
+blr_file_next_exists(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave)
+{
+char	*sptr, buf[80], bigbuf[4096];
+int	filenum;
+
+	if ((sptr = strrchr(slave->binlogfile, '.')) == NULL)
+		return 0;
+	filenum = atoi(sptr + 1);
+	sprintf(buf, BINLOG_NAMEFMT, router->fileroot, filenum + 1);
+	sprintf(bigbuf, "%s/%s", router->binlogdir, buf);
+	if (access(bigbuf, R_OK) == -1)
+		return 0;
+	return 1;
 }

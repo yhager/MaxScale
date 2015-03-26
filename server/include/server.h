@@ -18,6 +18,7 @@
  * Copyright MariaDB Corporation Ab 2013-2014
  */
 #include <dcb.h>
+#include <resultset.h>
 
 /**
  * @file service.h
@@ -41,6 +42,7 @@
  * 30/07/14	Massimiliano Pinto	Addition of NDB status for MySQL Cluster
  * 30/08/14	Massimiliano Pinto	Addition of SERVER_STALE_STATUS
  * 27/10/14	Massimiliano Pinto	Addition of SERVER_MASTER_STICKINESS
+ * 19/02/15	Mark Riddoch		Addition of serverGetList
  *
  * @endverbatim
  */
@@ -176,6 +178,7 @@ extern SERVER	*server_find(char *, unsigned short);
 extern void	printServer(SERVER *);
 extern void	printAllServers();
 extern void	dprintAllServers(DCB *);
+extern void	dprintAllServersJson(DCB *);
 extern void	dprintServer(DCB *, SERVER *);
 extern void	dListServers(DCB *);
 extern char	*server_status(SERVER *);
@@ -186,4 +189,5 @@ extern void	serverAddParameter(SERVER *, char *, char *);
 extern char	*serverGetParameter(SERVER *, char *);
 extern void	server_update(SERVER *, char *, char *, char *);
 extern void     server_set_unique_name(SERVER *, char *);
+extern RESULTSET	*serverGetList();
 #endif

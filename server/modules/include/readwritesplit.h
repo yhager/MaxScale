@@ -24,13 +24,14 @@
  * @verbatim
  * Revision History
  *
- * See GitHub https://github.com/skysql/MaxScale
+ * See GitHub https://github.com/mariadb-corporation/MaxScale
  *
  * @endverbatim
  */
 
 #include <dcb.h>
 #include <hashtable.h>
+#include <math.h>
 
 #undef PREP_STMT_CACHING
 
@@ -54,7 +55,8 @@ typedef enum bref_state {
         BREF_IN_USE           = 0x01,
         BREF_WAITING_RESULT   = 0x02, /*< for session commands only */
         BREF_QUERY_ACTIVE     = 0x04, /*< for other queries */
-        BREF_CLOSED           = 0x08
+        BREF_CLOSED           = 0x08,
+        BREF_SESCMD_FAILED    = 0x10 /*< Backend references that should be dropped */
 } bref_state_t;
 
 #define BREF_IS_NOT_USED(s)         ((s)->bref_state & ~BREF_IN_USE)
@@ -62,6 +64,7 @@ typedef enum bref_state {
 #define BREF_IS_WAITING_RESULT(s)   ((s)->bref_num_result_wait > 0)
 #define BREF_IS_QUERY_ACTIVE(s)     ((s)->bref_state & BREF_QUERY_ACTIVE)
 #define BREF_IS_CLOSED(s)           ((s)->bref_state & BREF_CLOSED)
+#define BREF_HAS_FAILED(s)           ((s)->bref_state & BREF_SESCMD_FAILED)
 
 typedef enum backend_type_t {
         BE_UNDEFINED=-1, 
@@ -144,6 +147,9 @@ typedef struct mysql_sescmd_st {
         GWBUF*             my_sescmd_buf;        /*< query buffer */
         unsigned char      my_sescmd_packet_type;/*< packet type */
 	bool               my_sescmd_is_replied; /*< is cmd replied to client */
+        unsigned char      reply_cmd; /*< The reply command. One of OK, ERR, RESULTSET or
+                                       *  LOCAL_INFILE. Slave servers are compared to this
+                                       *  when they return session command replies.*/
 #if defined(SS_DEBUG)
         skygw_chk_t        my_sescmd_chk_tail;
 #endif
@@ -226,6 +232,9 @@ typedef struct backend_ref_st {
         int             bref_num_result_wait;
         sescmd_cursor_t bref_sescmd_cur;
 	GWBUF*          bref_pending_cmd; /*< For stmt which can't be routed due active sescmd execution */
+        unsigned char
+		reply_cmd;	/*< The reply the backend server sent to a session command.
+                                 * Used to detect slaves that fail to execute session command. */
 #if defined(SS_DEBUG)
         skygw_chk_t     bref_chk_tail;
 #endif
@@ -237,7 +246,8 @@ typedef struct rwsplit_config_st {
         int               rw_max_slave_conn_count;
         select_criteria_t rw_slave_select_criteria;
         int               rw_max_slave_replication_lag;
-	target_t          rw_use_sql_variables_in;	
+	target_t          rw_use_sql_variables_in;
+        int               rw_max_sescmd_history_size;
 } rwsplit_config_t;
      
 
@@ -276,9 +286,11 @@ struct router_client_session {
         backend_ref_t*   rses_backend_ref; /*< Pointer to backend reference array */
         rwsplit_config_t rses_config;    /*< copied config info from router instance */
         int              rses_nbackends;
+        int              rses_nsescmd;  /*< Number of executed session commands */
         int              rses_capabilities; /*< input type, for example */
         bool             rses_autocommit_enabled;
         bool             rses_transaction_active;
+        DCB* client_dcb;
 #if defined(PREP_STMT_CACHING)
         HASHTABLE*       rses_prep_stmt[2];
 #endif

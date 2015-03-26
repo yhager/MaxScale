@@ -31,8 +31,10 @@
  * @verbatim
  * Revision History
  *
- * Date		Who		Description
+ * Date		Who			Description
  * 02/04/2014	Mark Riddoch		Initial implementation
+ * 17/02/2015	Massimiliano Pinto	Addition of slave port and username in diagnostics
+ * 18/02/2015	Massimiliano Pinto	Addition of dcb_close in closeSession
  *
  * @endverbatim
  */
@@ -165,6 +167,7 @@ createInstance(SERVICE *service, char **options)
 ROUTER_INSTANCE	*inst;
 char		*value, *name;
 int		i;
+unsigned char	*defuuid;
 
         if ((inst = calloc(1, sizeof(ROUTER_INSTANCE))) == NULL) {
                 return NULL;
@@ -180,6 +183,8 @@ int		i;
 	spinlock_init(&inst->binlog_lock);
 
 	inst->binlog_fd = -1;
+	inst->master_chksum = true;
+	inst->master_uuid = NULL;
 
 	inst->low_water = DEF_LOW_WATER;
 	inst->high_water = DEF_HIGH_WATER;
@@ -190,6 +195,21 @@ int		i;
 	inst->retry_backoff = 1;
 	inst->binlogdir = NULL;
 	inst->heartbeat = 300;	// Default is every 5 minutes
+
+	inst->user = strdup(service->credentials.name);
+	inst->password = strdup(service->credentials.authdata);
+
+	my_uuid_init((ulong)rand()*12345,12345);
+	if ((defuuid = (char *)malloc(20)) != NULL)
+	{
+		my_uuid(defuuid);
+		if ((inst->uuid = (char *)malloc(38)) != NULL)
+			sprintf(inst->uuid, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			defuuid[0], defuuid[1], defuuid[2], defuuid[3],
+			defuuid[4], defuuid[5], defuuid[6], defuuid[7],
+			defuuid[8], defuuid[9], defuuid[10], defuuid[11],
+			defuuid[12], defuuid[13], defuuid[14], defuuid[15]);
+	}
 
 	/*
 	 * We only support one server behind this router, since the server is
@@ -251,6 +271,10 @@ int		i;
 					inst->user = strdup(value);
 				}
 				else if (strcmp(options[i], "password") == 0)
+				{
+					inst->password = strdup(value);
+				}
+				else if (strcmp(options[i], "passwd") == 0)
 				{
 					inst->password = strdup(value);
 				}
@@ -328,10 +352,16 @@ int		i;
 				}
 			}
 		}
-		if (inst->fileroot == NULL)
-			inst->fileroot = strdup(BINLOG_NAME_ROOT);
+	}
+	else
+	{
+		LOGIF(LE, (skygw_log_write(
+			LOGFILE_ERROR, "%s: No router options supplied for binlogrouter",
+				service->name)));
 	}
 
+	if (inst->fileroot == NULL)
+		inst->fileroot = strdup(BINLOG_NAME_ROOT);
 	inst->active_logs = 0;
 	inst->reconnect_pending = 0;
 	inst->handling_threads = 0;
@@ -339,6 +369,25 @@ int		i;
 	inst->residual = NULL;
 	inst->slaves = NULL;
 	inst->next = NULL;
+	inst->lastEventTimestamp = 0;
+
+	/*
+	 * Read any cached response messages
+	 */
+	inst->saved_master.server_id = blr_cache_read_response(inst, "serverid");
+	inst->saved_master.heartbeat = blr_cache_read_response(inst, "heartbeat");
+	inst->saved_master.chksum1 = blr_cache_read_response(inst, "chksum1");
+	inst->saved_master.chksum2 = blr_cache_read_response(inst, "chksum2");
+	inst->saved_master.gtid_mode = blr_cache_read_response(inst, "gtidmode");
+	inst->saved_master.uuid = blr_cache_read_response(inst, "uuid");
+	inst->saved_master.setslaveuuid = blr_cache_read_response(inst, "ssuuid");
+	inst->saved_master.setnames = blr_cache_read_response(inst, "setnames");
+	inst->saved_master.utf8 = blr_cache_read_response(inst, "utf8");
+	inst->saved_master.select1 = blr_cache_read_response(inst, "select1");
+	inst->saved_master.selectver = blr_cache_read_response(inst, "selectver");
+	inst->saved_master.selectvercom = blr_cache_read_response(inst, "selectvercom");
+	inst->saved_master.selecthostname = blr_cache_read_response(inst, "selecthostname");
+	inst->saved_master.map = blr_cache_read_response(inst, "map");
 
 	/*
 	 * Initialise the binlog file and position
@@ -383,7 +432,7 @@ int		i;
 	 * Now start the replication from the master to MaxScale
 	 */
 	blr_start_master(inst);
-
+	free(name);
 	return (ROUTER *)inst;
 }
 
@@ -440,6 +489,7 @@ ROUTER_SLAVE		*slave;
 	slave->file = NULL;
 	strcpy(slave->binlogfile, "unassigned");
 	slave->connect_time = time(0);
+	slave->lastEventTimestamp = 0;
 
 	/**
          * Add this session to the list of active sessions.
@@ -577,6 +627,14 @@ ROUTER_SLAVE	 *slave = (ROUTER_SLAVE *)router_session;
 
                 /* Unlock */
                 rses_end_locked_router_action(slave);
+
+		/**
+		 * Close the slave server connection
+		 */
+                if (slave->dcb != NULL) {
+                        CHK_DCB(slave->dcb);
+                        dcb_close(slave->dcb);
+                }
         }
 }
 
@@ -702,6 +760,8 @@ struct tm	tm;
                    router_inst->stats.n_binlogs_ses);
 	dcb_printf(dcb, "\tTotal no. of binlog events received:        	%u\n",
                    router_inst->stats.n_binlogs);
+	dcb_printf(dcb, "\tNo. of bad CRC received from master:        	%u\n",
+                   router_inst->stats.n_badcrc);
 	minno = router_inst->stats.minno - 1;
 	if (minno == -1)
 		minno = 30;
@@ -729,11 +789,18 @@ struct tm	tm;
 				buf);
 	dcb_printf(dcb, "\t					(%d seconds ago)\n",
 			time(0) - router_inst->stats.lastReply);
-	dcb_printf(dcb, "\tLast event from master:  			0x%x (%s)\n",
+	dcb_printf(dcb, "\tLast event from master:  			0x%x, %s",
 			router_inst->lastEventReceived,
 			(router_inst->lastEventReceived >= 0 && 
 			router_inst->lastEventReceived < 0x24) ?
 			event_names[router_inst->lastEventReceived] : "unknown");
+	if (router_inst->lastEventTimestamp)
+	{
+		localtime_r(&router_inst->lastEventTimestamp, &tm);
+		asctime_r(&tm, buf);
+		dcb_printf(dcb, "\tLast binlog event timestamp:  			%ld (%s)\n",
+				router_inst->lastEventTimestamp, buf);
+	}
 	if (router_inst->active_logs)
 		dcb_printf(dcb, "\tRouter processing binlog records\n");
 	if (router_inst->reconnect_pending)
@@ -791,8 +858,11 @@ struct tm	tm;
 			if (session->uuid)
 				dcb_printf(dcb, "\t\tSlave UUID:					%s\n", session->uuid);
 			dcb_printf(dcb,
-				"\t\tSlave:						%s\n",
-						 session->dcb->remote);
+				"\t\tSlave_host_port:				%s:%d\n",
+						 session->dcb->remote, ntohs((session->dcb->ipv4).sin_port));
+			dcb_printf(dcb,
+				"\t\tUsername:					%s\n",
+						 session->dcb->user);
 			dcb_printf(dcb,
 				"\t\tSlave DCB:					%p\n",
 						 session->dcb);
@@ -818,6 +888,9 @@ struct tm	tm;
 					"\t\tNo. events sent:				%u\n",
 						session->stats.n_events);
 			dcb_printf(dcb,
+					"\t\tNo. bytes sent:					%u\n",
+						session->stats.n_bytes);
+			dcb_printf(dcb,
 					"\t\tNo. bursts sent:				%u\n",
 						session->stats.n_bursts);
 			dcb_printf(dcb,
@@ -842,19 +915,30 @@ struct tm	tm;
 			dcb_printf(dcb, "\t\tNo. of distribute action 2			%u\n", session->stats.n_actions[1]);
 			dcb_printf(dcb, "\t\tNo. of distribute action 3			%u\n", session->stats.n_actions[2]);
 #endif
-
-			if ((session->cstate & CS_UPTODATE) == 0)
+			if (session->lastEventTimestamp
+					&& router_inst->lastEventTimestamp)
 			{
-				dcb_printf(dcb, "\t\tSlave is in catchup mode. %s%s\n", 
+				localtime_r(&session->lastEventTimestamp, &tm);
+				asctime_r(&tm, buf);
+				dcb_printf(dcb, "\t\tLast binlog event timestamp			%u, %s", session->lastEventTimestamp, buf);
+				dcb_printf(dcb, "\t\tSeconds behind master				%u\n", router_inst->lastEventTimestamp - session->lastEventTimestamp);
+			}
+
+			if (session->state == 0)
+			{
+				dcb_printf(dcb, "\t\tSlave_mode:					connected\n");
+			}
+			else if ((session->cstate & CS_UPTODATE) == 0)
+			{
+				dcb_printf(dcb, "\t\tSlave_mode:					catchup. %s%s\n", 
 					((session->cstate & CS_EXPECTCB) == 0 ? "" :
 					"Waiting for DCB queue to drain."),
 					((session->cstate & CS_BUSY) == 0 ? "" :
 					" Busy in slave catchup."));
-
 			}
 			else
 			{
-				dcb_printf(dcb, "\t\tSlave is in normal mode.\n");
+				dcb_printf(dcb, "\t\tSlave_mode:					follow\n");
 				if (session->binlog_pos != router_inst->binlog_position)
 				{
 					dcb_printf(dcb, "\t\tSlave reports up to date however "
@@ -934,6 +1018,24 @@ errorReply(ROUTER *instance, void *router_session, GWBUF *message, DCB *backend_
 ROUTER_INSTANCE	*router = (ROUTER_INSTANCE *)instance;
 int		error, len;
 char		msg[85], *errmsg;
+
+	if (action == ERRACT_RESET)
+	{
+		backend_dcb->dcb_errhandle_called = false;
+		return;
+	}
+
+	/** Don't handle same error twice on same DCB */
+        if (backend_dcb->dcb_errhandle_called)
+	{
+		/** we optimistically assume that previous call succeed */
+		*succp = true;
+		return;
+	}
+	else
+	{
+		backend_dcb->dcb_errhandle_called = true;
+	}
 
 	len = sizeof(error);
 	if (router->master && getsockopt(router->master->fd, SOL_SOCKET, SO_ERROR, &error, &len) == 0 && error != 0)
@@ -1085,6 +1187,13 @@ int	len;
 	return slave->dcb->func.write(slave->dcb, ret);
 }
 
+/**
+ * Respond to a COM_PING command
+ *
+ * @param router	The router instance
+ * @param slave		The "slave" connection that requested the ping
+ * @param queue		The ping request
+ */
 int
 blr_ping(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave, GWBUF *queue)
 {

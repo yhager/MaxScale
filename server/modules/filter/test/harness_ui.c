@@ -20,7 +20,6 @@ int main(int argc, char** argv){
     printf("\n\n\tFilter Test Harness\n\n");
   }
   
-
   while(instance.running){
     printf("Harness> ");
     memset(buffer,0,256);
@@ -188,7 +187,7 @@ int main(int argc, char** argv){
 	}
 
 	instance.thrpool = t_thr_pool;
-	int thr_num = 1;
+	intptr_t thr_num = 1;
 
 	for(i = 0;i<instance.thrcount;i++){
 

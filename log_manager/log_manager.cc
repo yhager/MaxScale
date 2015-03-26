@@ -51,6 +51,10 @@ static int block_start_index;
 static int prevval;
 static simple_mutex_t msg_mutex;
 #endif
+static int highprec = 0;
+static int do_syslog = 1;
+static int do_maxscalelog = 1;
+
 /**
  * Variable holding the enabled logfiles information.
  * Used from log users to check enabled logs prior calling
@@ -167,7 +171,7 @@ struct logfile_st {
         size_t           lf_file_size;
         /** list of block-sized log buffers */
         mlist_t          lf_blockbuf_list;
-        int              lf_buf_size;
+        size_t           lf_buf_size;
         bool             lf_flushflag;
 	bool		 lf_rotateflag;
 	int              lf_spinlock; /**< lf_flushflag & lf_rotateflag */
@@ -391,7 +395,13 @@ static bool logmanager_init_nomutex(
         fw = &lm->lm_filewriter;
         fn->fn_state  = UNINIT;
         fw->fwr_state = UNINIT;
-        
+
+        if(!do_syslog)
+        {
+            free(syslog_id_str);
+            syslog_id_str = NULL;
+        }
+
         /** Initialize configuration including log file naming info */
         if (!fnames_conf_init(fn, argc, argv)) 
 	{
@@ -633,7 +643,7 @@ static int logmanager_write_log(
         int          err = 0;
         blockbuf_t*  bb;
         blockbuf_t*  bb_c;
-        int          timestamp_len;
+        size_t       timestamp_len;
         int          i;
 
         CHK_LOGMANAGER(lm);
@@ -680,10 +690,10 @@ static int logmanager_write_log(
         else
 	{
                 /** Length of string that will be written, limited by bufsize */
-                int safe_str_len; 
+                size_t safe_str_len; 
 		/** Length of session id */
-		int sesid_str_len;
-
+		size_t sesid_str_len;
+		size_t cmplen = 0;
 		/** 
 		 * 2 braces, 2 spaces and terminating char
 		 * If session id is stored to tls_log_info structure, allocate 
@@ -691,22 +701,26 @@ static int logmanager_write_log(
 		 */
 		if (id == LOGFILE_TRACE && tls_log_info.li_sesid != 0)
 		{
-			sesid_str_len = 2+2+get_decimal_len(tls_log_info.li_sesid)+1; 
+			sesid_str_len = 5*sizeof(char)+get_decimal_len(tls_log_info.li_sesid); 
 		}
 		else
 		{
 			sesid_str_len = 0;
-		}			
-                timestamp_len = get_timestamp_len();
-                
+		}
+                if(highprec)
+                  timestamp_len = get_timestamp_len_hp();
+                else
+                  timestamp_len = get_timestamp_len();
+		cmplen = sesid_str_len > 0 ? sesid_str_len - sizeof(char) : 0;
+		
                 /** Find out how much can be safely written with current block size */
-		if (timestamp_len-1+MAX(sesid_str_len-1,0)+str_len > lf->lf_buf_size)
+		if (timestamp_len-sizeof(char)+cmplen+str_len > lf->lf_buf_size)
 		{
 			safe_str_len = lf->lf_buf_size;
 		}
                 else
 		{
-			safe_str_len = timestamp_len-1+MAX(sesid_str_len-1,0)+str_len;
+			safe_str_len = timestamp_len-sizeof(char)+cmplen+str_len;
 		}
                 /**
                  * Seek write position and register to block buffer.
@@ -738,10 +752,17 @@ static int logmanager_write_log(
 		}
 #endif
 		/** Book space for log string from buffer */
+                if(do_maxscalelog)
+                {
                 wp = blockbuf_get_writepos(&bb,
                                            id,
                                            safe_str_len,
                                            flush);
+                }
+                else
+                {
+                    wp = (char*)malloc(sizeof(char)*(timestamp_len-sizeof(char)+cmplen+str_len + 1));
+                }
 
 
 #if defined (SS_LOG_DEBUG)
@@ -756,8 +777,10 @@ static int logmanager_write_log(
                  * to wp.
                  * Returned timestamp_len doesn't include terminating null.
                  */
-                timestamp_len = snprint_timestamp(wp, timestamp_len);
-		
+                 if(highprec)
+                   timestamp_len = snprint_timestamp_hp(wp, timestamp_len);
+                 else
+                   timestamp_len = snprint_timestamp(wp, timestamp_len);
 		if (sesid_str_len != 0)
 		{
 			/**
@@ -807,8 +830,15 @@ static int logmanager_write_log(
 			wp[safe_str_len-2]=' ';
 		}
 		wp[safe_str_len-1] = '\n';
-                blockbuf_unregister(bb);
 
+                if(do_maxscalelog)
+                {
+                    blockbuf_unregister(bb);
+                }
+                else
+                {
+                free(wp);
+                }
                 /**
                  * disable because cross-blockbuffer locking either causes deadlock
                  * or run out of memory blocks.
@@ -1362,12 +1392,12 @@ int skygw_log_write_flush(
          * Find out the length of log string (to be formatted str).
          */
         va_start(valist, str);
-        len = vsnprintf(NULL, 0, str, valist);
+        len = sizeof(char) * vsnprintf(NULL, 0, str, valist);
         va_end(valist);
         /**
          * Add one for line feed.
          */
-        len += 1;
+        len += sizeof(char);
         /**
          * Write log string to buffer and add to file write list.
          */
@@ -1696,11 +1726,14 @@ static bool fnames_conf_init(
 
                 case 'l':
                         /** record list of log file ids for syslogged */
+                    if(do_syslog)
+                    {
                         if (syslog_id_str != NULL)
                         {
                                 free (syslog_id_str);
                         }
                         syslog_id_str = optarg;
+                    }
                         break;
 
                 case 'm':
@@ -1713,6 +1746,7 @@ static bool fnames_conf_init(
                         
                 case 's':
                         /** record list of log file ids for later use */
+                    if(do_syslog)
                         shmem_id_str = optarg;
                         break;
                 case 'h':
@@ -2335,7 +2369,6 @@ static bool check_file_and_path(
 	bool* writable,
 	bool  do_log)
 {
-	int  fd;
 	bool exists;
 	
 	if (filename == NULL)
@@ -2349,112 +2382,54 @@ static bool check_file_and_path(
 	}
 	else
 	{
-		fd = open(filename, O_CREAT|O_EXCL, S_IRWXU);
-		
-		if (fd == -1)
-		{
-			/** File exists, check permission to read/write */
-			if (errno == EEXIST)
-			{
-				/** Open file and write a byte for test */
-				fd = open(filename, O_CREAT|O_RDWR, S_IRWXU|S_IRWXG);
-				
-				if (fd == -1)
-				{
-					if (do_log && file_is_symlink(filename))
-					{
-						fprintf(stderr,
-							"*\n* Error : Can't access "
-							"file pointed to by %s due "
-							"to %s.\n",
-							filename,
-							strerror(errno));
-					}
-					else if (do_log)
-					{
-						fprintf(stderr,
-							"*\n* Error : Can't access %s due "
-							"to %s.\n",
-							filename,
-							strerror(errno));
-					}
-					if (writable)
-					{
-						*writable = false;
-					}
-				}
-				else 
-				{
-					if (writable)
-					{
-						char c = ' ';
-						if (write(fd, &c, 1) == 1)
-						{                                        
-							*writable = true;
-						}
-						else
-						{
-							if (do_log && 
-								file_is_symlink(filename))
-							{
-								fprintf(stderr,
-									"*\n* Error : Can't write to "
-									"file pointed to by %s due to "
-									"%s.\n", 
-									filename,
-									strerror(errno));
-							}
-							else if (do_log)
-							{
-								fprintf(stderr,
-									"*\n* Error : Can't write to "
-									"%s due to %s.\n", 
-									filename,
-									strerror(errno));
-							}
-							*writable = false;
-						}
-					}
-					close(fd);
-				}
-				exists = true;
-			}
-			else
-			{
-				if (do_log && file_is_symlink(filename))
-				{
-					fprintf(stderr,
-						"*\n* Error : Can't access the file "
-						"pointed to by %s due to %s.\n",
-						filename,
-						strerror(errno));
-				}
-				else if (do_log)
-				{
-					fprintf(stderr,
-						"*\n* Error : Can't access %s due to %s.\n",
-						filename,
-						strerror(errno));
-				}					
-				exists = false;
-				
-				if (writable)
-				{
-					*writable = false;
-				}
-			}
-		}
-		else
-		{
-			close(fd);
-			unlink(filename);
-			exists = false;
-			
-			if (writable)
-			{
-				*writable = true;
-			}
-		}
+            if(access(filename,F_OK) == 0)
+              {
+
+                exists = true;
+
+                if(access(filename,W_OK) == 0)
+                  {
+                    if(writable)
+                      {
+                        *writable = true;
+                      }
+                  }
+                else
+                  {
+
+                    if (do_log && file_is_symlink(filename))
+                      {
+                        fprintf(stderr,
+                                "*\n* Error : Can't access "
+                                "file pointed to by %s due "
+                                "to %s.\n",
+                                filename,
+                                strerror(errno));
+                      }
+                    else if (do_log)
+                      {
+                        fprintf(stderr,
+                                "*\n* Error : Can't access %s due "
+                                "to %s.\n",
+                                filename,
+                                strerror(errno));
+                      }
+
+                    if(writable)
+                      {
+                        *writable = false;
+                      }
+                  }
+
+              }
+            else
+              {
+                exists = false;
+                if(writable)
+                  {
+                    *writable = true;
+                  }
+              }
 	}
 	return exists;
 }
@@ -2532,6 +2507,7 @@ static bool logfile_init(
 		char* c;
 		pid_t pid = getpid();
 		int   len = strlen(shm_pathname_prefix)+
+                + strlen("maxscale.") +
 			get_decimal_len((size_t)pid) + 1;
 			
 		c = (char *)calloc(len, sizeof(char));
@@ -2541,7 +2517,7 @@ static bool logfile_init(
 			succp = false;
 			goto return_with_succp;
 		}
-		sprintf(c, "%s%d", shm_pathname_prefix, pid);
+		sprintf(c, "%smaxscale.%d", shm_pathname_prefix, pid);
 		logfile->lf_filepath = c;
 		
 		if (mkdir(c, S_IRWXU | S_IRWXG) != 0 &&
@@ -3133,4 +3109,32 @@ void skygw_log_sync_all(void)
 	flushall_logfiles(true);
 	skygw_message_send(lm->lm_logmes);
 	skygw_message_wait(lm->lm_clientmes);
+}
+
+/**
+ * Toggle high precision logging
+ * @param val 0 for disabled, 1 for enabled
+ */
+void skygw_set_highp(int val)
+{
+        highprec = val;
+}
+
+
+/**
+ * Toggle syslog logging
+ * @param val 0 for disabled, 1 for enabled
+ */
+void logmanager_enable_syslog(int val)
+{
+    do_syslog = val;
+}
+
+/**
+ * Toggle syslog logging
+ * @param val 0 for disabled, 1 for enabled
+ */
+void logmanager_enable_maxscalelog(int val)
+{
+    do_maxscalelog = val;
 }

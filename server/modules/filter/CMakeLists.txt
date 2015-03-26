@@ -1,6 +1,8 @@
 if(BUILD_RABBITMQ)
+  find_package(RabbitMQ)
+  include_directories(${RABBITMQ_HEADERS})
   add_library(mqfilter SHARED mqfilter.c)
-  target_link_libraries(mqfilter query_classifier log_manager utils rabbitmq)
+  target_link_libraries(mqfilter query_classifier log_manager utils ${RABBITMQ_LIBRARIES})
   install(TARGETS mqfilter DESTINATION modules)
 endif()
 
@@ -28,10 +30,19 @@ add_library(luafilter SHARED luafilter.cc)
 target_link_libraries(luafilter log_manager utils lua)
 install(TARGETS luafilter DESTINATION modules)
 
+add_library(dbfwfilter SHARED dbfwfilter.c)
+target_link_libraries(dbfwfilter log_manager utils query_classifier)
+install(TARGETS dbfwfilter DESTINATION modules)
+
 add_library(namedserverfilter SHARED namedserverfilter.c)
 target_link_libraries(namedserverfilter log_manager utils)
 install(TARGETS namedserverfilter DESTINATION modules)
 
+if(BUILD_SLAVELAG)
+  add_library(slavelag SHARED slavelag.c)
+  target_link_libraries(slavelag log_manager utils query_classifier)
+  install(TARGETS slavelag DESTINATION modules)
+endif()
 
 add_subdirectory(hint)
 

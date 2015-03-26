@@ -488,7 +488,7 @@ static int gw_mysql_do_authentication(DCB *dcb, GWBUF *queue) {
 	 * Decode the token and check the password
 	 * Note: if auth_token_len == 0 && auth_token == NULL, user is without password
 	 */
-
+	skygw_log_write(LOGFILE_DEBUG,"Receiving connection from '%s' to database '%s'.",username,database);
 	auth_ret = gw_check_mysql_scramble_data(dcb,
                                                 auth_token,
                                                 auth_token_len,
@@ -513,6 +513,13 @@ static int gw_mysql_do_authentication(DCB *dcb, GWBUF *queue) {
 					sizeof(protocol->scramble), 
 					username, 
 					stage1_hash);
+		}
+		else
+		{
+			LOGIF(LM, (skygw_log_write(LOGFILE_MESSAGE,
+				"%s: login attempt for user %s, user not "
+				"found.",
+				dcb->service->name, username)));
 		}
 	}
 
@@ -561,11 +568,15 @@ int gw_read_client_event(
         GWBUF          *read_buffer = NULL;
         int             rc = 0;
         int             nbytes_read = 0;
+        uint8_t         cap = 0;
+        bool            stmt_input = false; /*< router input type */
+
         CHK_DCB(dcb);
         protocol = DCB_PROTOCOL(dcb, MySQLProtocol);
         CHK_PROTOCOL(protocol);
         rc = dcb_read(dcb, &read_buffer);
         
+	
         if (rc < 0)
         {
                 dcb_close(dcb);
@@ -576,54 +587,132 @@ int gw_read_client_event(
         {
                 goto return_rc;
         }
-        /** 
-         * if read queue existed appent read to it.
-         *   if length of read buffer is less than 3 or less than mysql packet
-         *   then return.
-         *   else copy mysql packets to separate buffers from read buffer and 
-         *   continue.
-         * else
-         *   if read queue didn't exist, length of read is less than 3 or less 
-         *   than mysql packet then 
-         *   create read queue and append to it and return.
-         *   if length read is less than mysql packet length append to read queue
-         *     append to it and return.
-         *   else (complete packet was read) continue.
-         */
-        if (dcb->dcb_readqueue)
-        {
-                uint8_t* data;
-                
-		dcb->dcb_readqueue = gwbuf_append(dcb->dcb_readqueue, read_buffer);
-		nbytes_read = gwbuf_length(dcb->dcb_readqueue);
-		data = (uint8_t *)GWBUF_DATA(dcb->dcb_readqueue);
-                
-                if (nbytes_read < 3 || nbytes_read < MYSQL_GET_PACKET_LEN(data))
-                {
-			rc = 0;
-			goto return_rc;
-                }
-                else
-                {
-                        /** 
-                         * There is at least one complete mysql packet in
-                         * read_buffer. 
-                         */
-                        read_buffer = dcb->dcb_readqueue;
-                        dcb->dcb_readqueue = NULL;                        
-                }
-        }
-        else
-        {
-                uint8_t* data = (uint8_t *)GWBUF_DATA(read_buffer);
 
-                if (nbytes_read < 3 || nbytes_read < MYSQL_GET_PACKET_LEN(data)+4) 
-                {
+	session = dcb->session;
+
+	if (protocol->protocol_auth_state == MYSQL_IDLE && session != NULL)
+	{
+		CHK_SESSION(session);
+		router = session->service->router;
+		router_instance = session->service->router_instance;
+		rsession = session->router_session;
+		ss_dassert(rsession != NULL);
+
+		if (router_instance != NULL && rsession != NULL) {
+
+	                /** Ask what type of input the router expects */
+			cap = router->getCapabilities(router_instance, rsession);
+                       
+			if (cap == 0 || (cap == RCAP_TYPE_PACKET_INPUT))
+			{
+				stmt_input = false;
+			}
+			else if (cap == RCAP_TYPE_STMT_INPUT)
+			{
+				stmt_input = true;
+				/** Mark buffer to as MySQL type */
+				gwbuf_set_type(read_buffer, GWBUF_TYPE_MYSQL);
+			}
+
+			/** 
+			 * If router doesn't implement getCapabilities correctly we end 
+			 * up here.
+			 */
+			else
+			{
+				GWBUF* errbuf;
+				bool   succp;
+			
+				LOGIF(LD, (skygw_log_write_flush(
+					LOGFILE_DEBUG,
+					"%lu [gw_read_client_event] Reading router "
+					"capabilities failed.",
+					pthread_self())));
+
+				errbuf = mysql_create_custom_error(
+					1, 
+					0, 
+					"Read invalid router capabilities. Routing failed. "
+					"Session will be closed.");
+			
+				router->handleError(
+					router_instance,
+					rsession, 
+					errbuf, 
+					dcb,
+					ERRACT_REPLY_CLIENT,
+					&succp);
+				gwbuf_free(errbuf);
+				/** 
+				 * If there are not enough backends close 
+				 * session 
+				 */
+				if (!succp)
+				{
+					LOGIF(LE, (skygw_log_write_flush(
+						LOGFILE_ERROR,
+						"Error : Routing the query failed. "
+						"Session will be closed.")));
+					dcb_close(dcb);
+				}
+                        	rc = 1;
+                        	goto return_rc;
+                	}
+		}
+	}
+
+	if (stmt_input) {
+                
+		/** 
+		 * if read queue existed appent read to it.
+		 * if length of read buffer is less than 3 or less than mysql packet
+		 *  then return.
+		 * else copy mysql packets to separate buffers from read buffer and 
+		 * continue.
+		 * else
+		 * if read queue didn't exist, length of read is less than 3 or less 
+		 * than mysql packet then 
+		 * create read queue and append to it and return.
+		 * if length read is less than mysql packet length append to read queue
+		 * append to it and return.
+		 * else (complete packet was read) continue.
+		*/
+		if (dcb->dcb_readqueue)
+		{
+			uint8_t* data;
+
 			dcb->dcb_readqueue = gwbuf_append(dcb->dcb_readqueue, read_buffer);
-			rc = 0;
-                        goto return_rc;
-                }
-        }
+			nbytes_read = gwbuf_length(dcb->dcb_readqueue);
+			data = (uint8_t *)GWBUF_DATA(dcb->dcb_readqueue);
+
+			if (nbytes_read < 3 || nbytes_read < MYSQL_GET_PACKET_LEN(data))
+			{
+				rc = 0;
+				goto return_rc;
+			}
+			else
+			{
+				/** 
+				 * There is at least one complete mysql packet in
+				 * read_buffer. 
+				*/
+				read_buffer = dcb->dcb_readqueue;
+				dcb->dcb_readqueue = NULL;                        
+			}
+		}
+		else
+		{
+			uint8_t* data = (uint8_t *)GWBUF_DATA(read_buffer);
+
+			if (nbytes_read < 3 || nbytes_read < MYSQL_GET_PACKET_LEN(data)+4) 
+	                {
+				dcb->dcb_readqueue = gwbuf_append(dcb->dcb_readqueue, read_buffer);
+				rc = 0;
+				goto return_rc;
+			}
+		}
+
+	}
         
         /**
          * Now there should be at least one complete mysql packet in read_buffer.
@@ -660,7 +749,7 @@ int gw_read_client_event(
 				 */
 				mysql_send_ok(dcb, 2, 0, NULL);
 			} 
-			else 
+			else
 			{
 				protocol->protocol_auth_state = MYSQL_AUTH_FAILED;
 				LOGIF(LD, (skygw_log_write(
@@ -731,102 +820,19 @@ int gw_read_client_event(
         
         case MYSQL_IDLE:
         {
-                uint8_t  cap = 0;
                 uint8_t* payload = NULL; 
-                bool     stmt_input; /*< router input type */
                
-                ss_dassert(nbytes_read >= 5);
-
                 session = dcb->session;
-                ss_dassert( session!= NULL);
+                ss_dassert(session!= NULL);
                 
                 if (session != NULL) 
                 {
                         CHK_SESSION(session);
-                        router = session->service->router;
-                        router_instance =
-                                session->service->router_instance;
-                        rsession = session->router_session;
-                        ss_dassert(rsession != NULL);
                 }
-
                 /* Now, we are assuming in the first buffer there is
                  * the information form mysql command */
                 payload = GWBUF_DATA(read_buffer);
-                /**
-                 * Without rsession there is no access to backend.
-                 * COM_QUIT : close client dcb
-                 * else     : write custom error to client dcb.
-                 */
-                if(rsession == NULL)
-		{
-                        /** COM_QUIT */
-                        if (MYSQL_IS_COM_QUIT(payload))
-                        {
-                                LOGIF(LD, (skygw_log_write_flush(
-                                        LOGFILE_DEBUG,
-                                        "%lu [gw_read_client_event] Client read "
-                                        "COM_QUIT and rsession == NULL. Closing "
-                                        "client dcb %p.",
-                                        pthread_self(),
-                                        dcb)));
-                                /** 
-                                 * close router session and that closes 
-                                 * backends
-                                 */
-                                dcb_close(dcb);
-                        } 
-                        else
-                        {
-#if defined(SS_DEBUG)                
-                                LOGIF(LE, (skygw_log_write_flush(
-                                        LOGFILE_ERROR,
-                                        "Client read error handling.")));
-#endif
-                                
-                                /* Send a custom error as MySQL command reply */
-                                mysql_send_custom_error(
-                                        dcb,
-                                        1,
-                                        0,
-                                        "Can't route query. Connection to "
-                                        "backend lost");
-                        }
-                        rc = 1;
-                        /** Free buffer */
-                        read_buffer = gwbuf_consume(read_buffer, nbytes_read);                
-                        goto return_rc;
-                }
 
-                /** Ask what type of input the router expects */
-                cap = router->getCapabilities(router_instance, rsession);
-                       
-                if (cap == 0 || (cap == RCAP_TYPE_PACKET_INPUT))
-                {
-                        stmt_input = false;
-                }
-                else if (cap == RCAP_TYPE_STMT_INPUT)
-                {
-                        stmt_input = true;
-                        /** Mark buffer to as MySQL type */
-                        gwbuf_set_type(read_buffer, GWBUF_TYPE_MYSQL);
-                }
-                else
-                {
-                        LOGIF(LD, (skygw_log_write_flush(
-                                LOGFILE_DEBUG,
-                                "%lu [gw_read_client_event] Reading router "
-                                "capabilities failed.",
-                                pthread_self())));
-                        mysql_send_custom_error(dcb,
-                                                1,
-                                                0,
-                                                "Operation failed. Router "
-                                                "session is closed.");
-                        rc = 1;
-                        goto return_rc;
-                }
-                
                 /** Route COM_QUIT to backend */
                 if (MYSQL_IS_COM_QUIT(payload))
                 {
@@ -843,6 +849,7 @@ int gw_read_client_event(
                 }
                 else
                 {
+			/** Reset error handler when routing of the new query begins */
 			router->handleError(NULL, NULL, NULL, dcb, ERRACT_RESET, NULL);
 			
                         if (stmt_input)                                
@@ -1525,12 +1532,17 @@ retblock:
  * It is assumed readbuf includes at least one complete packet. 
  * Return 1 in success. If the last packet is incomplete return success but
  * leave incomplete packet to readbuf.
+ * 
+ * @param session	Session pointer
+ * @param p_readbuf	Pointer to the address of GWBUF including the query
+ * 
+ * @return 1 if succeed, 
  */
 static int route_by_statement(
         SESSION* session, 
         GWBUF**  p_readbuf)
 {
-        int            rc = -1;
+        int            rc;
         GWBUF*         packetbuf;
 #if defined(SS_DEBUG)
         GWBUF*         tmpbuf;

@@ -261,7 +261,7 @@ static mysql_sescmd_t* sescmd_cursor_get_command(
 static bool sescmd_cursor_next(
 	sescmd_cursor_t* scur);
 
-static GWBUF* sescmd_cursor_process_replies(GWBUF* replybuf, backend_ref_t* bref);
+static GWBUF* sescmd_cursor_process_replies(GWBUF* replybuf, backend_ref_t* bref,bool*);
 
 static void tracelog_routed_query(
         ROUTER_CLIENT_SES* rses,
@@ -325,7 +325,7 @@ static int hashkeyfun(
   while((c = *ptr++)){
     hash = c + (hash << 6) + (hash << 16) - hash;
   }
-  return *(int *)key;
+  return hash;
 }
 
 static int hashcmpfun(
@@ -790,6 +790,7 @@ static void* newSession(
 #endif
 
 	client_rses->router = router;
+	client_rses->client_dcb = session->client;
         /** 
          * If service config has been changed, reload config from service to 
          * router instance first.
@@ -905,6 +906,15 @@ static void* newSession(
         client_rses->rses_capabilities = RCAP_TYPE_STMT_INPUT;
         client_rses->rses_backend_ref  = backend_ref;
         client_rses->rses_nbackends    = router_nservers; /*< # of backend servers */
+
+	if(client_rses->rses_config.rw_max_slave_conn_percent)
+	{
+	    int n_conn = 0;
+	    double pct = (double)client_rses->rses_config.rw_max_slave_conn_percent / 100.0;
+	    n_conn = MAX(floor((double)client_rses->rses_nbackends * pct),1);
+	    client_rses->rses_config.rw_max_slave_conn_count = n_conn;
+	}
+
         router->stats.n_sessions      += 1;
         
         /**
@@ -1373,8 +1383,19 @@ static route_target_t get_route_target (
 		 * backends but since this is SELECT that is not possible:
 		 * 1. response set is not handled correctly in clientReply and
 		 * 2. multiple results can degrade performance.
+		 *
+		 * Prepared statements are an exception to this since they do not
+		 * actually do anything but only prepare the statement to be used.
+		 * They can be safely routed to all backends since the execution
+		 * is done later.
+		 *
+		 * With prepared statement caching the task of routing
+		 * the execution of the prepared statements to the right server would be
+		 * an easy one. Currently this is not supported.
 		 */
-		if (QUERY_IS_TYPE(qtype, QUERY_TYPE_READ))
+		if (QUERY_IS_TYPE(qtype, QUERY_TYPE_READ) && 
+		 !( QUERY_IS_TYPE(qtype, QUERY_TYPE_PREPARE_STMT) ||
+		    QUERY_IS_TYPE(qtype, QUERY_TYPE_PREPARE_NAMED_STMT)))
 		{
 			LOGIF(LE, (skygw_log_write_flush(
 				LOGFILE_ERROR,
@@ -1402,17 +1423,19 @@ static route_target_t get_route_target (
 		QUERY_IS_TYPE(qtype, QUERY_TYPE_GSYSVAR_READ))) /*< read global sys var */
 	{
 		/** First set expected targets before evaluating hints */
-		if (QUERY_IS_TYPE(qtype, QUERY_TYPE_READ) ||
+		if (!QUERY_IS_TYPE(qtype, QUERY_TYPE_MASTER_READ) &&
+			(QUERY_IS_TYPE(qtype, QUERY_TYPE_READ) ||
 			QUERY_IS_TYPE(qtype, QUERY_TYPE_SHOW_TABLES) || /*< 'SHOW TABLES' */
 			/** Configured to allow reading variables from slaves */
 			(use_sql_variables_in == TYPE_ALL && 
 			(QUERY_IS_TYPE(qtype, QUERY_TYPE_USERVAR_READ) ||
 			QUERY_IS_TYPE(qtype, QUERY_TYPE_SYSVAR_READ) ||
-			QUERY_IS_TYPE(qtype, QUERY_TYPE_GSYSVAR_READ))))
+			QUERY_IS_TYPE(qtype, QUERY_TYPE_GSYSVAR_READ)))))
 		{
 			target = TARGET_SLAVE;
 		}
-		else if (QUERY_IS_TYPE(qtype, QUERY_TYPE_EXEC_STMT)	||
+		else if (QUERY_IS_TYPE(qtype, QUERY_TYPE_MASTER_READ) ||
+			QUERY_IS_TYPE(qtype, QUERY_TYPE_EXEC_STMT)	||
 			/** Configured not to allow reading variables from slaves */
 			(use_sql_variables_in == TYPE_MASTER && 
 			(QUERY_IS_TYPE(qtype, QUERY_TYPE_USERVAR_READ)	||
@@ -2198,17 +2221,32 @@ static bool route_single_stmt(
 			}
 			
 			if (bref != NULL && BREF_IS_IN_USE(bref))
-			{			
+			{		
+				/** Create and add MySQL error to eventqueue */
 				modutil_reply_parse_error(
 					bref->bref_dcb,
 					strdup("Routing query to backend failed. "
 					"See the error log for further "
 					"details."),
 					0);
-			}			
+				succp = true;
+			}
+			else
+			{
+				/** 
+				 * If there were no available backend references
+				 * available return false - session will be closed
+				 */
+				LOGIF(LE, (skygw_log_write_flush(
+					LOGFILE_ERROR,
+					"Error : Sending error message to client "
+					"failed. Router doesn't have any "
+					"available backends. Session will be "
+					"closed.")));
+				succp = false;
+			}
 			if (query_str) free (query_str);
 			if (qtype_str) free(qtype_str);
-			succp = true;
 			goto retblock;
 		}
 		/**
@@ -2638,11 +2676,13 @@ static void clientReply (
         DCB*    backend_dcb)
 {
         DCB*               client_dcb;
+        ROUTER_INSTANCE* router_inst;
         ROUTER_CLIENT_SES* router_cli_ses;
 	sescmd_cursor_t*   scur = NULL;
         backend_ref_t*     bref;
         
 	router_cli_ses = (ROUTER_CLIENT_SES *)router_session;
+        router_inst = (ROUTER_INSTANCE*)instance;
         CHK_CLIENT_RSES(router_cli_ses);
 
         /**
@@ -2739,7 +2779,20 @@ static void clientReply (
                         * the client. Return with buffer including response that
                         * needs to be sent to client or NULL.
                         */
-                        writebuf = sescmd_cursor_process_replies(writebuf, bref);
+			bool rconn = false;
+                        writebuf = sescmd_cursor_process_replies(writebuf, bref, &rconn);
+
+			if(rconn)
+			{
+			   select_connect_backend_servers(&router_cli_ses->rses_master_ref,
+						    router_cli_ses->rses_backend_ref,
+						    router_cli_ses->rses_nbackends,
+						    router_cli_ses->rses_config.rw_max_slave_conn_count,
+						    router_cli_ses->rses_config.rw_max_slave_replication_lag,
+						    router_cli_ses->rses_config.rw_slave_select_criteria,
+						    router_cli_ses->rses_master_ref->bref_dcb->session,
+						    router_cli_ses->router);
+			}
                 }
                 /** 
                  * If response will be sent to client, decrease waiter count.
@@ -3157,6 +3210,11 @@ static bool select_connect_backend_servers(
 				(master_host != NULL && 
 					(b->backend_server != master_host->backend_server)))
                         {
+			    if(BREF_HAS_FAILED(&backend_ref[i]))
+			    {
+				continue;
+			    }
+
                                 slaves_found += 1;
                                 
                                 /** Slave is already connected */
@@ -3452,8 +3510,6 @@ static bool select_connect_backend_servers(
                                 atomic_add(&backend_ref[i].bref_backend->backend_conn_count, -1);
                         }
                 }
-                master_connected = false;
-                slaves_connected = 0;
         }
 return_succp:
 
@@ -3646,15 +3702,19 @@ static void mysql_sescmd_done(
  */
 static GWBUF* sescmd_cursor_process_replies(
         GWBUF*           replybuf,
-        backend_ref_t*   bref)
+        backend_ref_t*   bref,
+	bool *reconnect)
 {
         mysql_sescmd_t*  scmd;
         sescmd_cursor_t* scur;
-        
+        ROUTER_CLIENT_SES* ses;
+	ROUTER_INSTANCE* router;
+	
         scur = &bref->bref_sescmd_cur;        
         ss_dassert(SPINLOCK_IS_LOCKED(&(scur->scmd_cur_rses->rses_lock)));
         scmd = sescmd_cursor_get_command(scur);
-               
+        ses = (*scur->scmd_cur_ptr_property)->rses_prop_rsession;
+	router = ses->router;
         CHK_GWBUF(replybuf);
         
         /** 
@@ -3663,6 +3723,7 @@ static GWBUF* sescmd_cursor_process_replies(
          */
         while (scmd != NULL && replybuf != NULL)
         {
+	    bref->reply_cmd = *((unsigned char*)replybuf->start + 4);
                 /** Faster backend has already responded to client : discard */
                 if (scmd->my_sescmd_is_replied)
                 {
@@ -3681,14 +3742,70 @@ static GWBUF* sescmd_cursor_process_replies(
                         }
                         /** Set response status received */
                         bref_clear_state(bref, BREF_WAITING_RESULT);
+			
+			if(bref->reply_cmd != scmd->reply_cmd)
+			{
+			    skygw_log_write(LOGFILE_TRACE,"Backend "
+				    "server '%s' response differs from master's response. "
+				    "Closing connection.",
+                                    bref->bref_backend->backend_server->unique_name);
+			    sescmd_cursor_set_active(scur,false);
+			     bref_clear_state(bref,BREF_QUERY_ACTIVE);
+			     bref_clear_state(bref,BREF_IN_USE);
+			     bref_set_state(bref,BREF_CLOSED);
+			     bref_set_state(bref,BREF_SESCMD_FAILED);
+			     if(bref->bref_dcb)
+				 dcb_close(bref->bref_dcb);
+			     *reconnect = true;
+			     if(replybuf)
+				 gwbuf_consume(replybuf,gwbuf_length(replybuf));
+			}
                 }
-                /** Response is in the buffer and it will be sent to client. */
-                else
+                /** This is a response from the master and it is the "right" one.
+		 * A slave server's response will be compared to this and if
+		 * their response differs from the master server's response, they
+		 * are dropped from the valid list of backend servers.
+		 * Response is in the buffer and it will be sent to client. */
+                else if(ses->rses_master_ref->bref_dcb == bref->bref_dcb)
                 {
                         /** Mark the rest session commands as replied */
                         scmd->my_sescmd_is_replied = true;
+                        scmd->reply_cmd = *((unsigned char*)replybuf->start + 4);
+			skygw_log_write(LOGFILE_DEBUG,"Master '%s' responded to a session command.",
+			     bref->bref_backend->backend_server->unique_name);
+			int i;
+			
+			for(i=0;i<ses->rses_nbackends;i++)
+			{
+			    if(!BREF_IS_WAITING_RESULT(&ses->rses_backend_ref[i]))
+			    {
+				/** This backend has already received a response */
+				if(ses->rses_backend_ref[i].reply_cmd != 
+				 scmd->reply_cmd && 
+				 !BREF_IS_CLOSED(&ses->rses_backend_ref[i]))
+				{
+				    bref_clear_state(&ses->rses_backend_ref[i],BREF_QUERY_ACTIVE);
+				    bref_clear_state(&ses->rses_backend_ref[i],BREF_IN_USE);
+				    bref_set_state(&ses->rses_backend_ref[i],BREF_CLOSED);
+				    bref_set_state(bref,BREF_SESCMD_FAILED);
+				    if(ses->rses_backend_ref[i].bref_dcb)
+					dcb_close(ses->rses_backend_ref[i].bref_dcb);
+				    *reconnect = true;
+				}
+			    }
+			}
+			
                 }
-                
+		else
+		{
+		    skygw_log_write(LOGFILE_DEBUG,"Slave '%s' responded faster to a session command.",
+			     bref->bref_backend->backend_server->unique_name);
+		    if(replybuf)
+			gwbuf_free(replybuf);
+		    return NULL;
+		}
+	    
+	    
                 if (sescmd_cursor_next(scur))
                 {
                         scmd = sescmd_cursor_get_command(scur);
@@ -4189,7 +4306,7 @@ static bool route_session_write(
                 {
                         DCB* dcb = backend_ref[i].bref_dcb;     
 			
-			if (LOG_IS_ENABLED(LOGFILE_TRACE))
+			if (LOG_IS_ENABLED(LOGFILE_TRACE) && BREF_IS_IN_USE((&backend_ref[i])))
 			{
 				LOGIF(LT, (skygw_log_write(
 					LOGFILE_TRACE,
@@ -4229,6 +4346,21 @@ static bool route_session_write(
 		
 		goto return_succp;
 	}
+
+	if(router_cli_ses->rses_config.rw_max_sescmd_history_size > 0 &&
+	 router_cli_ses->rses_nsescmd >= router_cli_ses->rses_config.rw_max_sescmd_history_size)
+	{
+	    LOGIF(LT, (skygw_log_write(
+		    LOGFILE_TRACE,
+			"Router session exceeded session command history limit. "
+		        "Closing router session. <")));
+		gwbuf_free(querybuf);
+		rses_end_locked_router_action(router_cli_ses);
+		router_cli_ses->client_dcb->func.hangup(router_cli_ses->client_dcb);
+		
+		goto return_succp;
+	}
+
         /** 
          * Additional reference is created to querybuf to 
          * prevent it from being released before properties
@@ -4300,6 +4432,9 @@ static bool route_session_write(
                         }
                 }
         }
+
+	atomic_add(&router_cli_ses->rses_nsescmd,1);
+
         /** Unlock router session */
         rses_end_locked_router_action(router_cli_ses);
                
@@ -4399,6 +4534,10 @@ static void rwsplit_process_router_options(
                                         router->rwsplit_config.rw_slave_select_criteria = c;
                                 }
                         }
+			else if(strcmp(options[i], "max_sescmd_history") == 0)
+			{
+			    router->rwsplit_config.rw_max_sescmd_history_size = atoi(value);
+			}
                 }
         } /*< for */
 }
@@ -4413,7 +4552,8 @@ static void rwsplit_process_router_options(
  * @param       errmsgbuf       The error message to reply
  * @param       backend_dcb     The backend DCB
  * @param       action          The action: REPLY, REPLY_AND_CLOSE, NEW_CONNECTION
- * @param       succp           Result of action. 
+ * @param       succp           Result of action. True if there is at least master 
+ * and enough slaves to continue session. Otherwise false.
  * 
  * Even if succp == true connecting to new slave may have failed. succp is to
  * tell whether router has enough master/slave connections to continue work.

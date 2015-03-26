@@ -158,6 +158,7 @@ int sendMessage(MYSQL* server, amqp_message_t* msg)
     (int)((msg->properties.correlation_id.len + 1)*2+1) + 
     strlen(DB_INSERT),
     rval = 0;
+char* saved;
   char *qstr = calloc(buffsz,sizeof(char)),
     *rawmsg = calloc((msg->body.len + 1),sizeof(char)),
     *clnmsg = calloc(((msg->body.len + 1)*2+1),sizeof(char)),
@@ -170,9 +171,9 @@ int sendMessage(MYSQL* server, amqp_message_t* msg)
   
   sprintf(qstr,"%.*s",(int)msg->body.len,(char *)msg->body.bytes);
   fprintf(out_fd,"Received: %s\n",qstr);
-  char *ptr = strtok(qstr,"|");
+  char *ptr = strtok_r(qstr,"|",&saved);
   sprintf(rawdate,"%s",ptr);
-  ptr = strtok(NULL,"\n\0");
+  ptr = strtok_r(NULL,"\n\0",&saved);
   if(ptr == NULL){
     fprintf(out_fd,"Message content not valid.\n");
     rval = 1;
@@ -337,6 +338,7 @@ int main(int argc, char** argv)
   MYSQL db_inst;
   char ch, *cnfname = NULL, *cnfpath = NULL;
   static const char* fname = "consumer.cnf";
+  const char* default_path = "@CMAKE_INSTALL_PREFIX@/etc";
 
   if((c_inst = calloc(1,sizeof(CONSUMER))) == NULL){
     fprintf(stderr, "Fatal Error: Cannot allocate enough memory.\n");
@@ -358,6 +360,12 @@ int main(int argc, char** argv)
       break;
     }
   }
+
+if(cnfpath == NULL)
+{
+    cnfpath = strdup(default_path);
+    cnfnlen = strlen(default_path);
+}
 
   cnfname = calloc(cnfnlen + strlen(fname) + 1,sizeof(char));
 

@@ -495,10 +495,19 @@ static skygw_query_type_t resolve_query_type(
 		{
 			type |= QUERY_TYPE_GSYSVAR_WRITE;
 		}
+                
+                /*
+                 * SHOW GLOBAL STATUS - Route to master
+                 */
+                else if (lex->sql_command == SQLCOM_SHOW_STATUS)
+                {
+                        type = QUERY_TYPE_WRITE;
+                }
 		/**
 		 * REVOKE ALL, ASSIGN_TO_KEYCACHE,
 		 * PRELOAD_KEYS, FLUSH, RESET, CREATE|ALTER|DROP SERVER
 		 */
+                
 		else 
 		{
 			type |= QUERY_TYPE_GSYSVAR_WRITE;
@@ -1210,7 +1219,8 @@ inline void add_str(char** buf, int* buflen, int* bufsize, char* str)
             if(*buf)
 		strcat(*buf," ");
 	}
-	strcat(*buf,str);
+        if(*buf)
+          strcat(*buf,str);
 	*buflen += isize;
 	
 }
@@ -1244,7 +1254,7 @@ char* skygw_get_affected_fields(GWBUF* buf)
 			
 			List_iterator<Item> ilist(lex->current_select->item_list);
 			item = (Item*)ilist.next();
-			for (item; item != NULL; item=(Item*)ilist.next()) 
+			for (; item != NULL; item=(Item*)ilist.next()) 
 				{
 
 					itype = item->type();
@@ -1559,11 +1569,66 @@ char* skygw_get_qtype_str(
 	return qtype_str;
 }
 
+/**
+ * Returns an array of strings of databases that this query uses.
+ * If the database isn't defined in the query, it is assumed that this query 
+ * only targets the current database.
+ * The value of @p size is set to the number of allocated strings. The caller is 
+ * responsible for freeing all the allocated memory.
+ * @param querybuf GWBUF containing the query
+ * @param size Size of the resulting array
+ * @return A new array of strings containing the database names or NULL if no 
+ * databases were found.
+ */
+char** skygw_get_database_names(GWBUF* querybuf,int* size)
+{
+	LEX*			lex;
+	TABLE_LIST*		tbl;
+	char			**databases = NULL, **tmp = NULL;
+	int			currsz = 0,i = 0;
+
+	if( (lex = get_lex(querybuf)) == NULL)
+	{
+		goto retblock;
+	}
+
+	lex->current_select = lex->all_selects_list;
+	
+	while(lex->current_select)
+	{
+		tbl = lex->current_select->table_list.first;
+
+		while(tbl)
+		{
+			if(strcmp(tbl->db,"skygw_virtual") != 0)
+			{
+				if(i>= currsz)
+				{
+					tmp = (char**)realloc(databases,
+							      sizeof(char*)*(currsz*2 + 1));
+					if(tmp == NULL) 
+					{
+						goto retblock;
+					}
+					databases = tmp;
+					currsz = currsz*2 + 1;
+				}
+				databases[i++] = strdup(tbl->db);
+			}
+			tbl=tbl->next_local;
+		}
+		lex->current_select = lex->current_select->next_select_in_list();
+	}
+
+retblock:
+	*size = i;
+	return databases;
+}
 
 skygw_query_op_t query_classifier_get_operation(GWBUF* querybuf)
 {
 	LEX* lex = get_lex(querybuf);
-	skygw_query_op_t operation;
+	skygw_query_op_t operation = QUERY_OP_UNDEFINED;
 	if(lex){
 		switch(lex->sql_command){
 		case SQLCOM_SELECT:

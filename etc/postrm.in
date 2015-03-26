@@ -1,0 +1,6 @@
+#!/bin/sh
+if [ "$1" -eq 0 ]
+then
+    rm -f /etc/init.d/maxscale
+    rm -f /etc/ld.so.conf.d/maxscale.conf
+fi
