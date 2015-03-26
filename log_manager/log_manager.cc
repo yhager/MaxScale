@@ -52,6 +52,9 @@ static int prevval;
 static simple_mutex_t msg_mutex;
 #endif
 static int highprec = 0;
+static int do_syslog = 1;
+static int do_maxscalelog = 1;
+
 /**
  * Variable holding the enabled logfiles information.
  * Used from log users to check enabled logs prior calling
@@ -392,7 +395,13 @@ static bool logmanager_init_nomutex(
         fw = &lm->lm_filewriter;
         fn->fn_state  = UNINIT;
         fw->fwr_state = UNINIT;
-        
+
+        if(!do_syslog)
+        {
+            free(syslog_id_str);
+            syslog_id_str = NULL;
+        }
+
         /** Initialize configuration including log file naming info */
         if (!fnames_conf_init(fn, argc, argv)) 
 	{
@@ -743,10 +752,17 @@ static int logmanager_write_log(
 		}
 #endif
 		/** Book space for log string from buffer */
+                if(do_maxscalelog)
+                {
                 wp = blockbuf_get_writepos(&bb,
                                            id,
                                            safe_str_len,
                                            flush);
+                }
+                else
+                {
+                    wp = (char*)malloc(sizeof(char)*(timestamp_len-sizeof(char)+cmplen+str_len + 1));
+                }
 
 
 #if defined (SS_LOG_DEBUG)
@@ -814,8 +830,15 @@ static int logmanager_write_log(
 			wp[safe_str_len-2]=' ';
 		}
 		wp[safe_str_len-1] = '\n';
-                blockbuf_unregister(bb);
 
+                if(do_maxscalelog)
+                {
+                    blockbuf_unregister(bb);
+                }
+                else
+                {
+                free(wp);
+                }
                 /**
                  * disable because cross-blockbuffer locking either causes deadlock
                  * or run out of memory blocks.
@@ -1703,11 +1726,14 @@ static bool fnames_conf_init(
 
                 case 'l':
                         /** record list of log file ids for syslogged */
+                    if(do_syslog)
+                    {
                         if (syslog_id_str != NULL)
                         {
                                 free (syslog_id_str);
                         }
                         syslog_id_str = optarg;
+                    }
                         break;
 
                 case 'm':
@@ -1720,6 +1746,7 @@ static bool fnames_conf_init(
                         
                 case 's':
                         /** record list of log file ids for later use */
+                    if(do_syslog)
                         shmem_id_str = optarg;
                         break;
                 case 'h':
@@ -2480,6 +2507,7 @@ static bool logfile_init(
 		char* c;
 		pid_t pid = getpid();
 		int   len = strlen(shm_pathname_prefix)+
+                + strlen("maxscale.") +
 			get_decimal_len((size_t)pid) + 1;
 			
 		c = (char *)calloc(len, sizeof(char));
@@ -2489,7 +2517,7 @@ static bool logfile_init(
 			succp = false;
 			goto return_with_succp;
 		}
-		sprintf(c, "%s%d", shm_pathname_prefix, pid);
+		sprintf(c, "%smaxscale.%d", shm_pathname_prefix, pid);
 		logfile->lf_filepath = c;
 		
 		if (mkdir(c, S_IRWXU | S_IRWXG) != 0 &&
@@ -3083,7 +3111,30 @@ void skygw_log_sync_all(void)
 	skygw_message_wait(lm->lm_clientmes);
 }
 
+/**
+ * Toggle high precision logging
+ * @param val 0 for disabled, 1 for enabled
+ */
 void skygw_set_highp(int val)
 {
         highprec = val;
+}
+
+
+/**
+ * Toggle syslog logging
+ * @param val 0 for disabled, 1 for enabled
+ */
+void logmanager_enable_syslog(int val)
+{
+    do_syslog = val;
+}
+
+/**
+ * Toggle syslog logging
+ * @param val 0 for disabled, 1 for enabled
+ */
+void logmanager_enable_maxscalelog(int val)
+{
+    do_maxscalelog = val;
 }

@@ -262,7 +262,7 @@ typedef struct dcb {
 	SPINLOCK	polloutlock;
 	int		polloutbusy;
 	int		writecheck;
-        time_t          last_read;      /*< Last time the DCB received data */
+        unsigned long          last_read;      /*< Last time the DCB received data */
 	unsigned int	high_water;	/**< High water mark */
 	unsigned int	low_water;	/**< Low water mark */
 	struct server	*server;	/**< The associated backend server */
@@ -271,6 +271,18 @@ typedef struct dcb {
         skygw_chk_t     dcb_chk_tail;
 #endif
 } DCB;
+
+/**
+ * The DCB usage filer used for returning DCB's in use for a certain reason
+ */
+typedef enum {
+	DCB_USAGE_CLIENT,
+	DCB_USAGE_LISTENER,
+	DCB_USAGE_BACKEND,
+	DCB_USAGE_INTERNAL,
+	DCB_USAGE_ZOMBIE,
+	DCB_USAGE_ALL
+} DCB_USAGE;
 
 #if defined(FAKE_CODE)
 unsigned char dcb_fake_write_errno[10240];
@@ -320,7 +332,11 @@ int		dcb_add_callback(DCB *, DCB_REASON, int	(*)(struct dcb *, DCB_REASON, void 
 int		dcb_remove_callback(DCB *, DCB_REASON, int (*)(struct dcb *, DCB_REASON, void *),
 			 void *);
 int		dcb_isvalid(DCB *);			/* Check the DCB is in the linked list */
+
 void           *dcb_get_sescmdcursor(DCB*);
+
+int		dcb_count_by_usage(DCB_USAGE);		/* Return counts of DCBs */
+
 bool   dcb_set_state(DCB* dcb, dcb_state_t new_state, dcb_state_t* old_state);
 void   dcb_call_foreach (struct server* server, DCB_REASON reason);
 size_t dcb_get_session_id(DCB* dcb);

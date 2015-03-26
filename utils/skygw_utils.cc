@@ -145,12 +145,16 @@ int atomic_add(
         int *variable,
         int value)
 {
+#ifdef __GNUC__
+        return (int) __sync_fetch_and_add (variable, value);
+#else
 	asm volatile(
 		"lock; xaddl %%eax, %2;"
 		:"=a" (value)
 		: "a" (value), "m" (*variable)
 		: "memory" );
 	return value;
+#endif
 }
 
 
@@ -707,8 +711,8 @@ size_t snprint_timestamp(
 
         /** Generate timestamp */
 
-        gettimeofday(&tv,NULL);
-        tm = *(localtime(&tv.tv_sec));
+        t = time(NULL);
+        tm = *(localtime(&t));
         snprintf(p_ts,
                  MIN(tslen,timestamp_len),
                  timestamp_formatstr,
@@ -2145,6 +2149,7 @@ bool is_valid_posix_path(char* path)
   return true;
 }
 
+
 /**
  * Pearson hashing function
  * @param x Input string
@@ -2188,4 +2193,32 @@ skygw_pearson(const unsigned char *x, size_t len, char *hex)
     snprintf(hex, PEARSON_DIGEST_LEN, "%02X%02X%02X%02X%02X%02X%02X%02X",
 	     hh[0], hh[1], hh[2], hh[3],
 	     hh[4], hh[5], hh[6], hh[7]);
+}
+
+/**
+ * Strip escape characters from a character string.
+ * @param String to parse.
+ * @return True if parsing was successful, false on errors.
+ */
+bool
+strip_escape_chars (char* val)
+{
+  int cur, end;
+
+  if (val == NULL)
+    return false;
+
+  end = strlen (val) + 1;
+  cur = 0;
+
+  while (cur < end)
+    {
+      if (val[cur] == '\\')
+	{
+	  memmove (val + cur, val + cur + 1,end - cur - 1);
+	  end--;
+	}
+      cur++;
+    }
+  return true;
 }

@@ -89,6 +89,8 @@
 
 #include <mysql_client_server_protocol.h>
 
+#include "modutil.h"
+
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
 extern size_t         log_ses_count[];
@@ -311,6 +313,11 @@ char		*weightby;
 				inst->bitmask |= (SERVER_MASTER|SERVER_SLAVE);
 				inst->bitvalue |= SERVER_SLAVE;
 			}
+			else if (!strcasecmp(options[i], "running"))
+			{
+				inst->bitmask |= (SERVER_RUNNING);
+				inst->bitvalue |= SERVER_RUNNING;
+			}
 			else if (!strcasecmp(options[i], "synced"))
 			{
 				inst->bitmask |= (SERVER_JOINED);
@@ -333,7 +340,12 @@ char		*weightby;
 			}
 		}
 	}
-
+	if(inst->bitmask == 0 && inst->bitvalue == 0)
+	{
+	    /** No parameters given, use RUNNING as a valid server */
+	    inst->bitmask |= (SERVER_RUNNING);
+	    inst->bitvalue |= SERVER_RUNNING;
+	}
 	/*
 	 * We have completed the creation of the instance data, so now
 	 * insert this router instance into the linked list of routers
@@ -525,6 +537,7 @@ BACKEND *master_host = NULL;
                 pthread_self(),
                 candidate->server->port,
                 candidate->current_connection_count)));
+
         /*
 	 * Open a backend connection, putting the DCB for this
 	 * connection in the client_rses->backend_dcb
@@ -554,7 +567,13 @@ BACKEND *master_host = NULL;
 	spinlock_release(&inst->lock);
 
         CHK_CLIENT_RSES(client_rses);
-                
+
+	skygw_log_write(
+                LOGFILE_TRACE,
+		 "Readconnroute: New session for server %s. "
+                "Connections : %d",
+		 candidate->server->unique_name,
+		 candidate->current_connection_count);
 	return (void *)client_rses;
 }
 
@@ -708,9 +727,18 @@ routeQuery(ROUTER *instance, void *router_session, GWBUF *queue)
                         "Error : Failed to route MySQL command %d to backend "
                         "server.",
                         mysql_command)));
+		skygw_log_write(
+                        LOGFILE_ERROR,
+			 "Error : Failed to route MySQL command %d to backend "
+                        "server %s.",
+			 mysql_command,
+			 router_cli_ses->backend->server->unique_name);
 		rc = 0;
                 goto return_rc;
+
         }
+
+	char* trc = NULL;
 
         switch(mysql_command) {
 		case MYSQL_COM_CHANGE_USER:
@@ -720,7 +748,8 @@ routeQuery(ROUTER *instance, void *router_session, GWBUF *queue)
 				backend_dcb->session,
 				queue);
 			break;
-		
+		case MYSQL_COM_QUERY:
+			LOGIF(LOGFILE_TRACE,(trc = modutil_get_SQL(queue)));
 		default:
 			rc = backend_dcb->func.write(backend_dcb, queue);
 			break;
@@ -735,6 +764,15 @@ routeQuery(ROUTER *instance, void *router_session, GWBUF *queue)
                 mysql_command,
                 backend_dcb,
                 rc)));
+
+	LOGIF(LOGFILE_TRACE,skygw_log_write(
+                LOGFILE_TRACE,
+		 "Routed command [%#x] to '%s'%s%s",
+		 mysql_command,
+		 backend_dcb->server->unique_name,
+		 trc?": ":".",
+		 trc?trc:""));
+	free(trc);
 return_rc:
         return rc;
 }
