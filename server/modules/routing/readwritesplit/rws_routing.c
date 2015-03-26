@@ -31,7 +31,7 @@ int hashkeyfun(void* key);
 int hashcmpfun (void *, void *);
 void* hstrdup(void* fval);
 void* hfree(void* fval);
- bool get_dcb(
+bool get_dcb(
         DCB**              p_dcb,
         ROUTER_CLIENT_SES* rses,
         backend_type_t     btype,
@@ -49,8 +49,17 @@ bool rses_begin_locked_router_action(
 
 void rses_end_locked_router_action(
         ROUTER_CLIENT_SES* rses);
- backend_ref_t* get_bref_from_dcb(ROUTER_CLIENT_SES* rses, DCB* dcb);
+backend_ref_t* get_bref_from_dcb(ROUTER_CLIENT_SES* rses, DCB* dcb);
 backend_ref_t* get_root_master_bref(ROUTER_CLIENT_SES* rses);
+int  rses_get_max_replication_lag(ROUTER_CLIENT_SES* rses);
+int  rses_get_max_slavecount(ROUTER_CLIENT_SES* rses, int router_nservers);
+void bref_clear_state(backend_ref_t* bref, bref_state_t state);
+void bref_set_state(backend_ref_t*   bref, bref_state_t state);
+void print_error_packet(
+        ROUTER_CLIENT_SES* rses, 
+        GWBUF*             buf, 
+        DCB*               dcb);
+
 /**
  * Examine the query type, transaction state and routing hints. Find out the
  * target for query routing.

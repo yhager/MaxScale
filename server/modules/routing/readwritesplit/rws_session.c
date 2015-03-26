@@ -26,6 +26,42 @@ extern __thread       log_info_t tls_log_info;
 
 bool rses_begin_locked_router_action(
         ROUTER_CLIENT_SES* rses);
+void rses_end_locked_router_action(
+        ROUTER_CLIENT_SES* rses);
+rses_property_t* rses_property_init(
+	rses_property_type_t prop_type);
+void rses_property_add(
+	ROUTER_CLIENT_SES* rses,
+	rses_property_t*   prop);
+void rses_property_done(
+	rses_property_t* prop);
+void bref_clear_state(backend_ref_t* bref, bref_state_t state);
+void bref_set_state(backend_ref_t*   bref, bref_state_t state);
+bool have_enough_servers(
+        ROUTER_CLIENT_SES** rses,
+        const int           nsrv,
+        int                 router_nsrv,
+        ROUTER_INSTANCE*    router);
+int  router_get_servercount(ROUTER_INSTANCE* router);
+void rwsplit_process_router_options(
+        ROUTER_INSTANCE* router,
+        char**           options);
+void refreshInstance(
+        ROUTER_INSTANCE*  router,
+        CONFIG_PARAMETER* param);
+int  rses_get_max_slavecount(ROUTER_CLIENT_SES* rses, int router_nservers);
+int  rses_get_max_replication_lag(ROUTER_CLIENT_SES* rses);
+bool select_connect_backend_servers(
+        backend_ref_t**    p_master_ref,
+        backend_ref_t*     backend_ref,
+        int                router_nservers,
+        int                max_nslaves,
+        int                max_rlag,
+        select_criteria_t  select_criteria,
+        SESSION*           session,
+        ROUTER_CLIENT_SES* rses,
+        ROUTER_INSTANCE*   router);
+
 /**
  * Associate a new session with this instance of the router.
  *

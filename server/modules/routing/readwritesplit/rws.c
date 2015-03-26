@@ -95,29 +95,29 @@ void*   handle_newSession(ROUTER *instance, SESSION *session);
 void    handle_closeSession(ROUTER *instance, void *session);
 void    handle_freeSession(ROUTER *instance, void *session);
 
- int  router_get_servercount(ROUTER_INSTANCE* router);
- int  rses_get_max_slavecount(ROUTER_CLIENT_SES* rses, int router_nservers);
- int  rses_get_max_replication_lag(ROUTER_CLIENT_SES* rses);
- backend_ref_t* get_bref_from_dcb(ROUTER_CLIENT_SES* rses, DCB* dcb);
- DCB* rses_get_client_dcb(ROUTER_CLIENT_SES* rses);
+int  router_get_servercount(ROUTER_INSTANCE* router);
+int  rses_get_max_slavecount(ROUTER_CLIENT_SES* rses, int router_nservers);
+int  rses_get_max_replication_lag(ROUTER_CLIENT_SES* rses);
+backend_ref_t* get_bref_from_dcb(ROUTER_CLIENT_SES* rses, DCB* dcb);
+DCB* rses_get_client_dcb(ROUTER_CLIENT_SES* rses);
 
- route_target_t get_route_target (
+route_target_t get_route_target (
 	skygw_query_type_t qtype,
 	bool               trx_active,
 	target_t           use_sql_variables_in,
 	HINT*              hint);
 
- backend_ref_t* check_candidate_bref(
+backend_ref_t* check_candidate_bref(
 	backend_ref_t* candidate_bref,
 	backend_ref_t* new_bref,
 	select_criteria_t sc);
 
- skygw_query_type_t is_read_tmp_table(
+skygw_query_type_t is_read_tmp_table(
 	ROUTER_CLIENT_SES* router_cli_ses,
 	GWBUF*  querybuf,
 	skygw_query_type_t type);
 
- void check_create_tmp_table(
+void check_create_tmp_table(
 	ROUTER_CLIENT_SES* router_cli_ses,
 	GWBUF*  querybuf,
 	skygw_query_type_t type);
@@ -159,7 +159,7 @@ int (*criteria_cmpfun[LAST_CRITERIA])(const void*, const void*)=
         bref_cmp_current_load
 };
 
- bool select_connect_backend_servers(
+bool select_connect_backend_servers(
         backend_ref_t**    p_master_ref,
         backend_ref_t*     backend_ref,
         int                router_nservers,
@@ -170,14 +170,14 @@ int (*criteria_cmpfun[LAST_CRITERIA])(const void*, const void*)=
         ROUTER_CLIENT_SES* rses,
         ROUTER_INSTANCE*   router);
 
- bool get_dcb(
+bool get_dcb(
         DCB**              dcb,
         ROUTER_CLIENT_SES* rses,
         backend_type_t     btype,
         char*              name,
         int                max_rlag);
 
- void rwsplit_process_router_options(
+void rwsplit_process_router_options(
         ROUTER_INSTANCE* router,
         char**           options);
 
