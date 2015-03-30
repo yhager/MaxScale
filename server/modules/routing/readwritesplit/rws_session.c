@@ -202,7 +202,7 @@ bool select_connect_backend_servers(
                                                router);
 
         rses_end_locked_router_action(client_rses);
-        client_rses->rses_sescmd_list->semantics.master_dcb = master_ref->bref_dcb;
+       
         /** 
 	 * Master and at least <min_nslaves> slaves must be found 
 	 */
@@ -213,7 +213,8 @@ bool select_connect_backend_servers(
                 goto return_rses;                
         }
         /** Copy backend pointers to router session. */
-        client_rses->rses_master_ref   = master_ref;	
+        client_rses->rses_master_ref   = master_ref;
+	client_rses->rses_sescmd_list->semantics.master_dcb = master_ref->bref_dcb;
 	/* assert with master_host */
 	ss_dassert(master_ref && (master_ref->bref_backend->backend_server && SERVER_MASTER));
         client_rses->rses_capabilities = RCAP_TYPE_STMT_INPUT;
