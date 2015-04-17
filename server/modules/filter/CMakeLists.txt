@@ -40,8 +40,8 @@ if(BUILD_SLAVELAG)
   install(TARGETS slavelag DESTINATION modules)
 endif()
 
-add_library(mongofilter SHARED mongofilter.c)
-target_link_libraries(mongofilter log_manager utils)
+add_library(mongofilter SHARED mongofilter.c mongofilter.cc)
+target_link_libraries(mongofilter log_manager utils query_classifier)
 install(TARGETS mongofilter DESTINATION modules)
 
 add_subdirectory(hint)

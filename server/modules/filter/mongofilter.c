@@ -5,6 +5,9 @@
 
 #include <dlfcn.h>
 
+#include "mongofilter.h"
+#include "query_classifier.h"
+
 /* defined in log_manager.cc */
 extern int lm_enabled_logfiles_bitmask;
 extern size_t log_ses_count[];
@@ -22,7 +25,7 @@ typedef struct mongolibrary_object {
     void  (*destroyInstance)(void *instance); /* is this ever called? */
     void* (*createSession)(void* instance);
     void  (*destroySession)(void *session);
-    void  (*runQuery)(void* session, char* sql, unsigned char** data, size_t* len);
+    void  (*runQuery)(void* session, char* sql, void* lex, unsigned char** data, size_t* len);
 } MONGO_OBJECT;
 
 typedef struct {
@@ -33,7 +36,7 @@ typedef struct {
 typedef struct {
     SESSION* session;
     void* mongo_session;
-    /*    DOWNSTREAM down; */
+    /* DOWNSTREAM down; */
 } MONGO_SESSION;
 
 static FILTER *createInstance(char **options,
@@ -155,10 +158,32 @@ static int routeQuery(FILTER *instance,
     unsigned char* buf;
     size_t len;
     GWBUF *reply;
+    void* lex = NULL;
 
     if (sql)
     {
-        my_instance->object->runQuery(my_session->mongo_session, sql, &buf, &len);
+        if (!query_is_parsed(queue))
+        {
+            bool success = parse_query(queue);
+            if (!success)
+            {
+                skygw_log_write_flush(LOGFILE_ERROR,
+                                      "Parsing query failed");
+                /* downstream maybe? */
+                return 0;
+            }
+            lex = get_lex(queue);
+            /* do we want to send downstream in this case?
+            if (!is_select_command(lex))
+            {
+                return my_session->down.routeQuery(my_session->down.instance,
+                                                   my_session->down.session, queue)
+                return 0;
+            }
+            */
+            
+        }
+        my_instance->object->runQuery(my_session->mongo_session, sql, lex, &buf, &len);
         /* @TODO: move data from buf to GWBUF 
         * reply = BUF_TO_GWBUF(buf, len);
         **/
