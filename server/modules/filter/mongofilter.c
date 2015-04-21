@@ -36,7 +36,7 @@ typedef struct {
 typedef struct {
     SESSION* session;
     void* mongo_session;
-    /* DOWNSTREAM down; */
+    DOWNSTREAM down;
 } MONGO_SESSION;
 
 static FILTER *createInstance(char **options,
@@ -144,7 +144,7 @@ static void setDownstream(FILTER *instance,
                           void *session,
                           DOWNSTREAM *downstream)
 {
-    /*((MONGO_SESSION *)session)->down = *downstream;*/
+    ((MONGO_SESSION *)session)->down = *downstream;
 }
 
 static int routeQuery(FILTER *instance,
@@ -169,22 +169,19 @@ static int routeQuery(FILTER *instance,
             {
                 skygw_log_write_flush(LOGFILE_ERROR,
                                       "Parsing query failed");
-                /* downstream maybe? */
+                /* @todo: downstream maybe? */
                 return 0;
             }
             lex = get_lex(queue);
-            /* do we want to send downstream in this case?
             if (!is_select_command(lex))
             {
+                /* @todo: do we want to send downstream in this case? */
                 return my_session->down.routeQuery(my_session->down.instance,
-                                                   my_session->down.session, queue)
-                return 0;
+                                                   my_session->down.session, queue);
             }
-            */
-            
         }
         my_instance->object->runQuery(my_session->mongo_session, sql, lex, &buf, &len);
-        /* @TODO: move data from buf to GWBUF 
+        /* @TODO: move data from buf to GWBUF
         * reply = BUF_TO_GWBUF(buf, len);
         **/
         free(buf);
