@@ -157,7 +157,7 @@ static int routeQuery(FILTER *instance,
     DCB* dcb = my_session->session->client;
     unsigned char* buf;
     size_t len;
-    GWBUF *reply;
+    GWBUF *reply = NULL;
     void* lex = NULL;
 
     if (sql)
@@ -181,10 +181,11 @@ static int routeQuery(FILTER *instance,
             }
         }
         my_instance->object->runQuery(my_session->mongo_session, sql, lex, &buf, &len);
-        /* @TODO: move data from buf to GWBUF
-        * reply = BUF_TO_GWBUF(buf, len);
-        **/
-        free(buf);
+        reply = gwbuf_alloc(len);
+        ss_dassert(reply != NULL);
+        if (reply == NULL)
+            return 1;
+        memcpy(GWBUF_DATA(reply), buf, len);
         return dcb->func.write(dcb, reply);
     }
     return 1;
