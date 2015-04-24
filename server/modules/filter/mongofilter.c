@@ -25,7 +25,9 @@ typedef struct mongolibrary_object {
     void  (*destroyInstance)(void *instance); /* is this ever called? */
     void* (*createSession)(void* instance);
     void  (*destroySession)(void *session);
-    void  (*runQuery)(void* session, char* sql, void* lex, unsigned char** data, size_t* len);
+    void  (*beginQuery)(void* session, char* sql, void* lex);
+    bool  (*getResults)(void* session, unsigned char** data, size_t* len);
+    void  (*endQuery)(void* session);
 } MONGO_OBJECT;
 
 typedef struct {
@@ -159,6 +161,8 @@ static int routeQuery(FILTER *instance,
     size_t len;
     GWBUF *reply = NULL;
     void* lex = NULL;
+    bool more;
+    int ret = 0;
 
     if (sql)
     {
@@ -180,13 +184,19 @@ static int routeQuery(FILTER *instance,
                                                    my_session->down.session, queue);
             }
         }
-        my_instance->object->runQuery(my_session->mongo_session, sql, lex, &buf, &len);
-        reply = gwbuf_alloc(len);
-        ss_dassert(reply != NULL);
-        if (reply == NULL)
-            return 1;
-        memcpy(GWBUF_DATA(reply), buf, len);
-        return dcb->func.write(dcb, reply);
+        my_instance->object->beginQuery(my_session->mongo_session, sql, lex);
+        do {
+            more = my_instance->object->getResults(my_session->mongo_session, &buf, &len);
+            reply = gwbuf_alloc(len);
+            ss_dassert(reply != NULL);
+            if (reply == NULL)
+                return 1;
+            memcpy(GWBUF_DATA(reply), buf, len);
+            ret += dcb->func.write(dcb, reply);
+            dcb->func.write_ready(dcb);
+        } while (more);
+        my_instance->object->endQuery(my_session->mongo_session);
+        return ret;
     }
     return 1;
 }
