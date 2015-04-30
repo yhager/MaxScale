@@ -2,6 +2,7 @@
 #include <modutil.h>
 #include <filter.h>
 #include <log_manager.h>
+#include <mysql_client_server_protocol.h>
 
 #include <dlfcn.h>
 
@@ -23,11 +24,13 @@ MODULE_INFO info = {
 typedef struct mongolibrary_object {
     void* (*createInstance)(char *address, int port);
     void  (*destroyInstance)(void *instance); /* is this ever called? */
-    void* (*createSession)(void* instance);
+    void* (*createSession)(void* instance, char* db);
     void  (*destroySession)(void *session);
     void  (*beginQuery)(void* session, char* sql, void* lex);
     bool  (*getResults)(void* session, unsigned char** data, size_t* len);
     void  (*endQuery)(void* session);
+    void  (*beginServerCommand)(void* session, const void* begin, const void* end);
+    void  (*endServerCommand)(void *session);
 } MONGO_OBJECT;
 
 typedef struct {
@@ -118,11 +121,14 @@ static void *newSession(FILTER *instance,
 {
     MONGO_INSTANCE* my_instance = (MONGO_INSTANCE*) instance;
     MONGO_SESSION* my_session;
+    MYSQL_session* mysql_session = (MYSQL_session*)session->data;
 
     if ((my_session = calloc(1, sizeof(MONGO_SESSION))) != NULL)
     {
         my_session->session = session;
-        my_session->mongo_session = my_instance->object->createSession(my_instance->instance);
+        my_session->mongo_session = my_instance
+            ->object
+            ->createSession(my_instance->instance, mysql_session->db);
     }
     return my_session;
 }
@@ -149,56 +155,90 @@ static void setDownstream(FILTER *instance,
     ((MONGO_SESSION *)session)->down = *downstream;
 }
 
+static int handle_results(MONGO_SESSION* mongo_session, MONGO_OBJECT* mongo)
+{
+    int ret = 1;
+    DCB* dcb = mongo_session->session->client;
+    bool more;
+    GWBUF *reply = NULL;
+    unsigned char* buf;
+    size_t len;
+
+    do {
+        more = mongo->getResults(mongo_session->mongo_session, &buf, &len);
+        reply = gwbuf_alloc(len);
+        ss_dassert(reply != NULL);
+        if (reply == NULL)
+            break;
+        memcpy(GWBUF_DATA(reply), buf, len);
+        ret += dcb->func.write(dcb, reply);
+        dcb->func.write_ready(dcb);
+    } while (more);
+
+    return ret;
+}
+
 static int routeQuery(FILTER *instance,
                       void *session,
                       GWBUF *queue)
 {
-    MONGO_INSTANCE* my_instance = (MONGO_INSTANCE*) instance;
-    MONGO_SESSION* my_session = (MONGO_SESSION*) session;
+    MONGO_INSTANCE* mongo_instance = (MONGO_INSTANCE*) instance;
+    MONGO_SESSION* mongo_session = (MONGO_SESSION*) session;
+    MONGO_OBJECT* mongo = (MONGO_OBJECT*) mongo_instance->object;
     char* sql = modutil_get_SQL(queue);
-    DCB* dcb = my_session->session->client;
-    unsigned char* buf;
-    size_t len;
-    GWBUF *reply = NULL;
     void* lex = NULL;
-    bool more;
-    int ret = 0;
+    int ret = 1;
 
     if (sql)
     {
         if (!query_is_parsed(queue))
         {
-            bool success = parse_query(queue);
-            if (!success)
+            if (parse_query(queue))
+            {
+                lex = get_lex(queue);
+                if (can_handle_sql_command(lex))
+                {
+                    mongo->beginQuery(mongo_session->mongo_session, sql, lex);
+                    ret = handle_results(mongo_session, mongo);
+                    mongo->endQuery(mongo_session->mongo_session);
+                }
+                else
+                {
+                    /* NOTE: 'show tables', 'show databases', 'describe
+                       table', 'show create table foo' will all end up in
+                       here */
+
+                    /* @todo: do we want to send downstream in this case? */
+                    ret = mongo_session->down.routeQuery(mongo_session->down.instance,
+                                                      mongo_session->down.session, queue);
+                }
+            }
+            else
             {
                 skygw_log_write_flush(LOGFILE_ERROR,
                                       "Parsing query failed");
-                /* @todo: downstream maybe? */
-                return 0;
-            }
-            lex = get_lex(queue);
-            if (!is_select_command(lex))
-            {
-                /* @todo: do we want to send downstream in this case? */
-                return my_session->down.routeQuery(my_session->down.instance,
-                                                   my_session->down.session, queue);
+                ret = 0;
+
             }
         }
-        my_instance->object->beginQuery(my_session->mongo_session, sql, lex);
-        do {
-            more = my_instance->object->getResults(my_session->mongo_session, &buf, &len);
-            reply = gwbuf_alloc(len);
-            ss_dassert(reply != NULL);
-            if (reply == NULL)
-                return 1;
-            memcpy(GWBUF_DATA(reply), buf, len);
-            ret += dcb->func.write(dcb, reply);
-            dcb->func.write_ready(dcb);
-        } while (more);
-        my_instance->object->endQuery(my_session->mongo_session);
-        return ret;
+        free(sql);
     }
-    return 1;
+    else
+    {
+        /* not an sql. Check the actual protocol to determine the command */
+        char command = GWBUF_DATA_CHAR(queue, 4);
+        if (can_handle_server_command(command))
+        {
+            /* $$... This assumes the command uses only a single buffer in
+               GWBUF. We might need to traverse and unite if this is not the
+               case. ...$$ */
+            mongo->beginServerCommand(mongo_session->mongo_session,
+                                      queue->start, queue->end);
+            handle_results(mongo_session, mongo);
+            mongo->endServerCommand(mongo_session->mongo_session);
+        }
+    }
+    return ret;
 }
 
 static void diagnostic(FILTER *instance, void *fsession, DCB *dcb) {}
