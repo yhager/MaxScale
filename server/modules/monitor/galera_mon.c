@@ -32,6 +32,8 @@
  * 24/06/14	Massimiliano Pinto	Added depth level 0 for each node
  * 30/10/14	Massimiliano Pinto	Added disableMasterFailback feature
  * 10/11/14	Massimiliano Pinto	Added setNetworkTimeout for connect,read,write
+ * 20/04/15	Guillaume Lefranc	Added availableWhenDonor feature
+ * 22/04/15     Martin Brampton         Addition of disableMasterRoleSetting
  *
  * @endverbatim
  */
@@ -158,6 +160,8 @@ CONFIG_PARAMETER* params = (CONFIG_PARAMETER*)opt;
 		handle->id = MONITOR_DEFAULT_ID;
 		handle->interval = MONITOR_INTERVAL;
 		handle->disableMasterFailback = 0;
+		handle->availableWhenDonor = 0;
+                handle->disableMasterRoleSetting = 0;
 		handle->master = NULL;
 		handle->connect_timeout=DEFAULT_CONNECT_TIMEOUT;
 		handle->read_timeout=DEFAULT_READ_TIMEOUT;
@@ -170,6 +174,10 @@ CONFIG_PARAMETER* params = (CONFIG_PARAMETER*)opt;
 	{
 	    if(!strcmp(params->name,"disable_master_failback"))
 		handle->disableMasterFailback = config_truth_value(params->value);
+	    else if(!strcmp(params->name,"available_when_donor"))
+		handle->availableWhenDonor = config_truth_value(params->value);
+	    else if(!strcmp(params->name,"disable_master_role_setting"))
+		handle->disableMasterRoleSetting = config_truth_value(params->value);
 	    params = params->next;
 	}
 
@@ -289,6 +297,8 @@ char		*sep;
 
 	dcb_printf(dcb,"\tSampling interval:\t%lu milliseconds\n", handle->interval);
 	dcb_printf(dcb,"\tMaster Failback:\t%s\n", (handle->disableMasterFailback == 1) ? "off" : "on");
+	dcb_printf(dcb,"\tAvailable when Donor:\t%s\n", (handle->availableWhenDonor == 1) ? "on" : "off");
+	dcb_printf(dcb,"\tMaster Role Setting Disabled:\t%s\n", (handle->disableMasterRoleSetting == 1) ? "on" : "off");
 	dcb_printf(dcb,"\tConnect Timeout:\t%i seconds\n", handle->connect_timeout);
 	dcb_printf(dcb,"\tRead Timeout:\t\t%i seconds\n", handle->read_timeout);
 	dcb_printf(dcb,"\tWrite Timeout:\t\t%i seconds\n", handle->write_timeout);
@@ -367,6 +377,8 @@ char 			*server_string;
 		int read_timeout = handle->read_timeout;
 		int write_timeout = handle->write_timeout;
 
+		if(database->con)
+		    mysql_close(database->con);
 		database->con = mysql_init(NULL);
 
 		rc = mysql_options(database->con, MYSQL_OPT_CONNECT_TIMEOUT, (void *)&connect_timeout);
@@ -428,14 +440,28 @@ char 			*server_string;
 	}	
 
 	/* Check if the the Galera FSM shows this node is joined to the cluster */
-	if (mysql_query(database->con, "SHOW STATUS LIKE 'wsrep_local_state_comment'") == 0
+	if (mysql_query(database->con, "SHOW STATUS LIKE 'wsrep_local_state'") == 0
 		&& (result = mysql_store_result(database->con)) != NULL)
 	{
 		num_fields = mysql_num_fields(result);
 		while ((row = mysql_fetch_row(result)))
 		{
-			if (strncasecmp(row[1], "SYNCED", 3) == 0)
+			if (strcmp(row[1], "4") == 0) 
 				isjoined = 1;
+	
+			/* Check if the node is a donor and is using xtrabackup, in this case it can stay alive */
+			else if (strcmp(row[1], "2") == 0 && handle->availableWhenDonor == 1) {
+				if (mysql_query(database->con, "SHOW VARIABLES LIKE 'wsrep_sst_method'") == 0
+					&& (result = mysql_store_result(database->con)) != NULL)
+				{
+					num_fields = mysql_num_fields(result);
+					while ((row = mysql_fetch_row(result)))
+					{
+						if (strncmp(row[1], "xtrabackup", 10) == 0)
+							isjoined = 1;
+					}
+				}
+			}
 		}
 		mysql_free_result(result);
 	}
@@ -577,40 +603,47 @@ int			log_no_members = 1;
 		 * Decision depends on master_stickiness value set in configuration
 		 */
 
-		/* get the candidate master, followinf MIN(node_id) rule */
+		/* get the candidate master, following MIN(node_id) rule */
 		candidate_master = get_candidate_master(handle->databases);
 
 		/* Select the master, based on master_stickiness */
-		handle->master = set_cluster_master(handle->master, candidate_master, master_stickiness);
+                if (1 == handle->disableMasterRoleSetting) {
+                    handle->master = NULL;
+                }
+                else {
+                    handle->master = set_cluster_master(handle->master, candidate_master, master_stickiness);
+                }
 
 		ptr = handle->databases;
 
-		while (ptr && handle->master) {
+		while (ptr) {
 			if (!SERVER_IS_JOINED(ptr->server) || SERVER_IN_MAINT(ptr->server)) {
 				ptr = ptr->next;
 				continue;
 			}
 
-			if (ptr != handle->master) {
+                        if (handle->master) {
+                            if (ptr != handle->master) {
 				/* set the Slave role */
 				server_set_status(ptr->server, SERVER_SLAVE);
 				server_clear_status(ptr->server, SERVER_MASTER);
 
-				/* clear master stickyness */
+				/* clear master stickiness */
 				server_clear_status(ptr->server, SERVER_MASTER_STICKINESS);
-			} else {
+                            } else {
 				/* set the Master role */
 				server_set_status(handle->master->server, SERVER_MASTER);
 				server_clear_status(handle->master->server, SERVER_SLAVE);
 
 				if (candidate_master && handle->master->server->node_id != candidate_master->server->node_id) {
-					/* set master stickyness */
+					/* set master stickiness */
 					server_set_status(handle->master->server, SERVER_MASTER_STICKINESS);
 				} else {
-					/* clear master stickyness */
+					/* clear master stickiness */
 					server_clear_status(ptr->server, SERVER_MASTER_STICKINESS);
 				}			
-			}
+                            }
+                        }
 
 			is_cluster++;
 
@@ -730,6 +763,22 @@ disableMasterFailback(void *arg, int disable)
 {
 MYSQL_MONITOR   *handle = (MYSQL_MONITOR *)arg;
         memcpy(&handle->disableMasterFailback, &disable, sizeof(int));
+}
+
+/**
+ * Allow a Galera node to be in sync when Donor.
+ *
+ * When enabled, the monitor will check if the node is using xtrabackup or xtrabackup-v2
+ * as SST method. In that case, node will stay as synced.
+ *
+ * @param arg		The handle allocated by startMonitor
+ * @param disable	To allow sync status use 1, 0 for traditional behavior
+ */
+static void
+availableWhenDonor(void *arg, int disable)
+{
+MYSQL_MONITOR   *handle = (MYSQL_MONITOR *)arg;
+        memcpy(&handle->availableWhenDonor, &disable, sizeof(int));
 }
 
 /**

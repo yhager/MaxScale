@@ -401,7 +401,8 @@ char 		  *server_string;
                 int  connect_timeout = handle->connect_timeout;
                 int  read_timeout = handle->read_timeout;
                 int  write_timeout = handle->write_timeout;
-
+		if(database->con)
+		    mysql_close(database->con);
                 database->con = mysql_init(NULL);
 
                 rc = mysql_options(database->con, MYSQL_OPT_CONNECT_TIMEOUT, (void *)&connect_timeout);
@@ -796,7 +797,7 @@ int log_no_master = 1;
 			mon_status_changed(root_master) && 
 			!(root_master->server->status & SERVER_STALE_STATUS)) 
 		{
-			if (root_master->pending_status & (SERVER_MASTER)) {
+			if (root_master->pending_status & (SERVER_MASTER) && SERVER_IS_RUNNING(root_master->server)) {
 				if (!(root_master->mon_prev_status & SERVER_STALE_STATUS) && 
 					!(root_master->server->status & SERVER_MAINT)) 
 				{

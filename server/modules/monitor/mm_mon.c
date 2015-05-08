@@ -360,7 +360,8 @@ char 		  *server_string;
 		char *dpwd = decryptPassword(passwd);
                 int  rc;
                 int  read_timeout = 1;
-
+		if(database->con)
+		    mysql_close(database->con);
                 database->con = mysql_init(NULL);
 
                 rc = mysql_options(database->con, MYSQL_OPT_READ_TIMEOUT, (void *)&read_timeout);
@@ -531,18 +532,20 @@ char 		  *server_string;
 	}
 
 	/* get variable 'read_only' set by an external component */
-        if (mysql_query(database->con, "SHOW GLOBAL VARIABLES LIKE 'read_only'") == 0
-                && (result = mysql_store_result(database->con)) != NULL)
-        {
-                num_fields = mysql_num_fields(result);
-                while ((row = mysql_fetch_row(result)))
-                {
-                        if (strncasecmp(row[1], "OFF", 3) == 0) {
-                                        ismaster = 1;
-                        }
-                }
-                mysql_free_result(result);
-        }
+	if (mysql_query(database->con, "SHOW GLOBAL VARIABLES LIKE 'read_only'") == 0
+		&& (result = mysql_store_result(database->con)) != NULL)
+	{
+		num_fields = mysql_num_fields(result);
+		while ((row = mysql_fetch_row(result)))
+		{
+			if (strncasecmp(row[1], "OFF", 3) == 0) {
+				ismaster = 1;
+			} else {
+				isslave = 1;
+			}
+		}
+		mysql_free_result(result);
+	}
 
 	/* Remove addition info */
 	monitor_clear_pending_status(database, SERVER_STALE_STATUS);
@@ -563,7 +566,7 @@ char 		  *server_string;
 	}
 
 	/* Set the Master role */
-        if (isslave && ismaster)
+        if (ismaster)
         {
 		monitor_clear_pending_status(database, SERVER_SLAVE);
                 monitor_set_pending_status(database, SERVER_MASTER);

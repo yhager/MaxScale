@@ -374,9 +374,14 @@ int	query_len;
 		else if (strcasecmp(word, "@master_binlog_checksum") == 0)
 		{
 			word = strtok_r(NULL, sep, &brkb);
-			if (word && (strcasecmp(word, "@@global.biglog_checksum'") == 0))
+			if (word && (strcasecmp(word, "'none'") == 0))
+				slave->nocrc = 1;
+			else if (word && (strcasecmp(word, "@@global.binlog_checksum") == 0))
 				slave->nocrc = !router->master_chksum;
+			else
+				slave->nocrc = 0;
 
+			
 			free(query_text);
 			return blr_slave_replay(router, slave, router->saved_master.chksum1);
 		}
@@ -1196,9 +1201,9 @@ uint32_t	chksum;
        	LOGIF(LD, (skygw_log_write(
 		LOGFILE_DEBUG,
 		"%s: COM_BINLOG_DUMP: binlog name '%s', length %d, "
-		"from position %d.", router->service->name,
+		"from position %lu.", router->service->name,
 			slave->binlogfile, binlognamelen, 
-			slave->binlog_pos)));
+			(unsigned long)slave->binlog_pos)));
 
 	slave->seqno = 1;
 
@@ -1256,7 +1261,7 @@ uint32_t	chksum;
 			"%s: New slave %s, server id %d,  requested binlog file %s from position %lu",
 				router->service->name, slave->dcb->remote,
 					slave->serverid,
-					slave->binlogfile, slave->binlog_pos)));
+					slave->binlogfile, (unsigned long)slave->binlog_pos)));
 
 	if (slave->binlog_pos != router->binlog_position ||
 			strcmp(slave->binlogfile, router->binlog_name) != 0)
@@ -1524,18 +1529,18 @@ if (hkheartbeat - beat1 > 1) LOGIF(LE, (skygw_log_write(
 			if (slave->stats.n_caughtup == 1)
 			{
 				LOGIF(LM, (skygw_log_write(LOGFILE_MESSAGE,
-					"%s: Slave %s is up to date %s, %u.",
+					"%s: Slave %s is up to date %s, %lu.",
 					router->service->name,
 					slave->dcb->remote,
-					slave->binlogfile, slave->binlog_pos)));
+					slave->binlogfile, (unsigned long)slave->binlog_pos)));
 			}
 			else if ((slave->stats.n_caughtup % 50) == 0)
 			{
 				LOGIF(LM, (skygw_log_write(LOGFILE_MESSAGE,
-					"%s: Slave %s is up to date %s, %u.",
+					"%s: Slave %s is up to date %s, %lu.",
 					router->service->name,
 					slave->dcb->remote,
-					slave->binlogfile, slave->binlog_pos)));
+					slave->binlogfile, (unsigned long)slave->binlog_pos)));
 			}
 		}
 	}
@@ -1556,11 +1561,11 @@ if (hkheartbeat - beat1 > 1) LOGIF(LE, (skygw_log_write(
 			 * we ignore these issues during the rotate processing.
 			 */
 			LOGIF(LE, (skygw_log_write(LOGFILE_ERROR,
-				"Slave reached end of file for binlog file %s at %u "
+				"Slave reached end of file for binlog file %s at %lu "
 				"which is not the file currently being downloaded. "
 				"Master binlog is %s, %lu. This may be caused by a "
 				"previous failure of the master.",
-				slave->binlogfile, slave->binlog_pos,
+				slave->binlogfile, (unsigned long)slave->binlog_pos,
 				router->binlog_name, router->binlog_position)));
 			if (blr_slave_fake_rotate(router, slave))
 			{
@@ -1956,7 +1961,7 @@ blr_slave_disconnect_server(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave, int se
 		{
 			/* server_id found */
 			server_found = 1;
-			LOGIF(LT, (skygw_log_write(LOGFILE_TRACE, "%s: Slave %s, server id %d, disconnected by %s@%s",
+			LOGIF(LM, (skygw_log_write(LOGFILE_MESSAGE, "%s: Slave %s, server id %d, disconnected by %s@%s",
 				router->service->name,
 				sptr->dcb->remote,
 				server_id,
@@ -2048,7 +2053,7 @@ blr_slave_disconnect_all(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave)
 				return 1;
 			}
 
-			LOGIF(LT, (skygw_log_write(LOGFILE_TRACE, "%s: Slave %s, server id %d, disconnected by %s@%s",
+			LOGIF(LM, (skygw_log_write(LOGFILE_MESSAGE, "%s: Slave %s, server id %d, disconnected by %s@%s",
 				router->service->name,
 				sptr->dcb->remote, sptr->serverid, slave->dcb->user, slave->dcb->remote)));
 

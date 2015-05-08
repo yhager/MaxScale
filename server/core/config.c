@@ -42,6 +42,8 @@
  * 07/11/14	Massimiliano Pinto	Addition of monitor timeouts for connect/read/write
  * 20/02/15	Markus Mäkelä		Added connection_timeout parameter for services
  * 05/03/15	Massimiliano	Pinto	Added notification_feedback support
+ * 20/04/15	Guillaume Lefranc	Added available_when_donor parameter
+ * 22/04/15     Martin Brampton         Added disable_master_role_setting parameter
  *
  * @endverbatim
  */
@@ -208,12 +210,33 @@ int		rval;
 	conn = mysql_init(NULL);
 	if (conn) {
 		if (mysql_real_connect(conn, NULL, NULL, NULL, NULL, 0, NULL, 0)) {
-			char *ptr;
-			version_string = (char *)mysql_get_server_info(conn);
-			ptr = strstr(version_string, "-embedded");
+			char *ptr,*tmp;
+			
+			tmp = (char *)mysql_get_server_info(conn);
+			unsigned int server_version = mysql_get_server_version(conn);
+			
+			if(version_string)
+			    free(version_string);
+
+			if((version_string = malloc(strlen(tmp) + strlen("5.5.5-") + 1)) == NULL)
+			    return 0;
+
+			if (server_version >= 100000)
+			{
+			    strcpy(version_string,"5.5.5-");
+			    strcat(version_string,tmp);
+			}
+			else
+			{
+			    strcpy(version_string,tmp);
+			}
+
+			ptr = strstr(tmp, "-embedded");
 			if (ptr) {
 				*ptr = '\0';
 			}
+			
+
 		}
 		mysql_close(conn);
 	}
@@ -279,7 +302,15 @@ process_config_context(CONFIG_CONTEXT *context)
 {
 CONFIG_CONTEXT		*obj;
 int			error_count = 0;
+HASHTABLE* monitorhash;
 
+if((monitorhash = hashtable_alloc(5,simple_str_hash,strcmp)) == NULL)
+{
+    skygw_log_write(LOGFILE_ERROR,"Error: Failed to allocate ,onitor configuration check hashtable.");
+    return 0;
+}
+
+hashtable_memory_fns(monitorhash,strdup,NULL,free,NULL);
 	/**
 	 * Process the data and create the services and servers defined
 	 * in the data.
@@ -309,9 +340,11 @@ int			error_count = 0;
 				char *enable_root_user;
 				char *connection_timeout;
 				char *auth_all_servers;
+				char *optimize_wildcard;
 				char *strip_db_esc;
 				char *weightby;
 				char *version_string;
+				char *subservices;
 				bool  is_rwsplit = false;
 				bool  is_schemarouter = false;
 				char *allow_localhost_match_wildcard_host;
@@ -319,6 +352,7 @@ int			error_count = 0;
 				obj->element = service_alloc(obj->object, router);
 				user = config_get_value(obj->parameters, "user");
 				auth = config_get_value(obj->parameters, "passwd");
+				subservices = config_get_value(obj->parameters, "subservices");
 				enable_root_user = config_get_value(
 							obj->parameters, 
 							"enable_root_user");
@@ -328,9 +362,14 @@ int			error_count = 0;
 						obj->parameters,
 						"connection_timeout");
 
-				auth_all_servers = 
+				optimize_wildcard =
 					config_get_value(
 						obj->parameters, 
+						"optimize_wildcard");
+
+				auth_all_servers =
+					config_get_value(
+						obj->parameters,
 						"auth_all_servers");
 
 				strip_db_esc = 
@@ -346,6 +385,15 @@ int			error_count = 0;
 			
 				version_string = config_get_value(obj->parameters, 
 								  "version_string");
+
+				if(subservices)
+				{
+				    service_set_param_value(obj->element,
+						     obj->parameters,
+						     subservices,
+						     1,STRING_TYPE);
+				}
+
 				/** flag for rwsplit-specific parameters */
 				if (strncmp(router, "readwritesplit", strlen("readwritesplit")+1) == 0)
 				{
@@ -395,6 +443,10 @@ int			error_count = 0;
 				if(auth_all_servers)
 					serviceAuthAllServers(obj->element, 
 						config_truth_value(auth_all_servers));
+
+				if(optimize_wildcard)
+					serviceOptimizeWildcard(obj->element,
+						config_truth_value(optimize_wildcard));
 
 				if(strip_db_esc)
 					serviceStripDbEsc(obj->element, 
@@ -885,6 +937,10 @@ int			error_count = 0;
 					/* set monitor interval */
 					if (interval > 0)
 						monitorSetInterval(obj->element, interval);
+					else
+					    skygw_log_write(LOGFILE_ERROR,"Warning: Monitor '%s' "
+						    "missing monitor_interval parameter, "
+						    "default value of 10000 miliseconds.",obj->object);
 
 					/* set timeouts */
 					if (connect_timeout > 0)
@@ -906,6 +962,13 @@ int			error_count = 0;
                                                             obj->element && obj1->element)
                                                         {
 								found = 1;
+								if(hashtable_add(monitorhash,obj1->object,"") == 0)
+								{
+								    skygw_log_write(LOGFILE_ERROR,
+									     "Warning: Multiple monitors are monitoring server [%s]. "
+									    "This will cause undefined behavior.",
+									     obj1->object);
+								}
 								monitorAddServer(
                                                                         obj->element,
                                                                         obj1->element);
@@ -966,7 +1029,8 @@ int			error_count = 0;
 		obj = obj->next;
 	} /*< while */
 	/** TODO: consistency check function */
-        
+
+	hashtable_free(monitorhash);
         /**
          * error_count += consistency_checks();
          */
@@ -1261,7 +1325,7 @@ int i;
         }
 	else if (strcmp(name, "ms_timestamp") == 0)
 	{
-		skygw_set_highp(atoi(value));
+		skygw_set_highp(config_truth_value(value));
 	}
 	else
 	{
@@ -1269,7 +1333,7 @@ int i;
 		{
 			if (strcasecmp(name, lognames[i].logname) == 0)
 			{
-				if (atoi(value))
+				if (config_truth_value(value))
 					skygw_log_enable(lognames[i].logfile);
 				else
 					skygw_log_disable(lognames[i].logfile);
@@ -1415,6 +1479,7 @@ SERVER			*server;
 					char *connection_timeout;
 
 					char* auth_all_servers;
+					char* optimize_wildcard;
 					char* strip_db_esc;
 					char* max_slave_conn_str;
 					char* max_slave_rlag_str;
@@ -1430,6 +1495,7 @@ SERVER			*server;
 								"passwd");
                     
 					auth_all_servers = config_get_value(obj->parameters, "auth_all_servers");
+					optimize_wildcard = config_get_value(obj->parameters, "optimize_wildcard");
 					strip_db_esc = config_get_value(obj->parameters, "strip_db_esc");
 					version_string = config_get_value(obj->parameters, "version_string");
 					allow_localhost_match_wildcard_host = config_get_value(obj->parameters, "localhost_match_wildcard_host");
@@ -1446,21 +1512,23 @@ SERVER			*server;
                                                                user,
                                                                auth);
 						if (enable_root_user)
-							serviceEnableRootUser(service, atoi(enable_root_user));
+							serviceEnableRootUser(service, config_truth_value(enable_root_user));
 
 						if (connection_timeout)
-							serviceSetTimeout(service, atoi(connection_timeout));
+							serviceSetTimeout(service, config_truth_value(connection_timeout));
 
 
                                                 if(auth_all_servers)
-                                                    serviceAuthAllServers(service, atoi(auth_all_servers));
+                                                    serviceAuthAllServers(service, config_truth_value(auth_all_servers));
+						if(optimize_wildcard)
+                                                    serviceOptimizeWildcard(service, config_truth_value(optimize_wildcard));
 						if(strip_db_esc)
-                                                    serviceStripDbEsc(service, atoi(strip_db_esc));
+                                                    serviceStripDbEsc(service, config_truth_value(strip_db_esc));
 
 						if (allow_localhost_match_wildcard_host)
 							serviceEnableLocalhostMatchWildcardHost(
 								service,
-								atoi(allow_localhost_match_wildcard_host));
+								config_truth_value(allow_localhost_match_wildcard_host));
                                                 
                                                 /** Read, validate and set max_slave_connections */        
                                                 max_slave_conn_str = 
@@ -1564,6 +1632,7 @@ SERVER			*server;
 					char *connection_timeout;
 					char *allow_localhost_match_wildcard_host;
 					char *auth_all_servers;
+					char *optimize_wildcard;
 					char *strip_db_esc;
 
 					enable_root_user = 
@@ -1576,6 +1645,9 @@ SERVER			*server;
 					auth_all_servers = 
                                                 config_get_value(obj->parameters, 
                                                                  "auth_all_servers");
+					optimize_wildcard =
+                                                config_get_value(obj->parameters,
+                                                                 "optimize_wildcard");
 					strip_db_esc = 
                                                 config_get_value(obj->parameters, 
                                                                  "strip_db_esc");
@@ -1596,7 +1668,7 @@ SERVER			*server;
                                                                user,
                                                                auth);
 						if (enable_root_user)
-							serviceEnableRootUser(obj->element, atoi(enable_root_user));
+							serviceEnableRootUser(obj->element, config_truth_value(enable_root_user));
 
 						if (connection_timeout)
 							serviceSetTimeout(obj->element, atoi(connection_timeout));
@@ -1604,7 +1676,7 @@ SERVER			*server;
 						if (allow_localhost_match_wildcard_host)
 							serviceEnableLocalhostMatchWildcardHost(
 								obj->element,
-								atoi(allow_localhost_match_wildcard_host));
+								config_truth_value(allow_localhost_match_wildcard_host));
                                         }
 				}
 			}
@@ -1826,6 +1898,7 @@ static char *service_params[] =
                 "enable_root_user",
                 "connection_timeout",
                 "auth_all_servers",
+		"optimize_wildcard",
                 "strip_db_esc",
                 "localhost_match_wildcard_host",
                 "max_slave_connections",
@@ -1863,6 +1936,8 @@ static char *monitor_params[] =
 		"backend_connect_timeout",
 		"backend_read_timeout",
 		"backend_write_timeout",
+		"available_when_donor",
+                "disable_master_role_setting",
                 NULL
         };
 /**
@@ -1976,15 +2051,37 @@ bool config_set_qualified_param(
 int
 config_truth_value(char *str)
 {
-	if (strcasecmp(str, "true") == 0 || strcasecmp(str, "on") == 0 || strcasecmp(str, "yes") == 0)
+	if (strcasecmp(str, "true") == 0 || strcasecmp(str, "on") == 0 ||
+	 strcasecmp(str, "yes") == 0 || strcasecmp(str, "1") == 0)
 	{
 		return 1;
 	}
-	if (strcasecmp(str, "false") == 0 || strcasecmp(str, "off") == 0 || strcasecmp(str, "no") == 0)
+	if (strcasecmp(str, "false") == 0 || strcasecmp(str, "off") == 0 ||
+	 strcasecmp(str, "no") == 0|| strcasecmp(str, "0") == 0)
 	{
 		return 0;
 	}
-	return atoi(str);
+	skygw_log_write(LOGFILE_ERROR,"Error: Not a boolean value: %s",str);
+	return -1;
+}
+
+
+/**
+ * Converts a string into a floating point representation of a percentage value.
+ * For example 75% is converted to 0.75 and -10% is converted to -0.1.
+ * @param	str	String to convert
+ * @return	String converted to a floating point percentage
+ */
+double
+config_percentage_value(char *str)
+{
+    double value = 0;
+
+    value = strtod(str,NULL);
+    if(value != 0)
+	value /= 100.0;
+
+    return value;
 }
 
 static char *InternalRouters[] = {
@@ -2039,6 +2136,7 @@ config_get_ifaddr(unsigned char *output)
 	ifc.ifc_len = sizeof(buf);
 	ifc.ifc_buf = buf;
 	if (ioctl(sock, SIOCGIFCONF, &ifc) == -1) {
+		close(sock);
 		return 0;
 	}
 
@@ -2055,6 +2153,7 @@ config_get_ifaddr(unsigned char *output)
 				}
 			}
 		} else {
+		    close(sock);
 			return 0;
 		}
 	}
