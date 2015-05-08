@@ -44,6 +44,7 @@ bool can_handle_sql_command(void *lex)
     {
     case SQLCOM_SELECT:
     case SQLCOM_SHOW_DATABASES:
+    case SQLCOM_SHOW_FIELDS:
     case SQLCOM_SHOW_TABLES:
         return true;
     default:
@@ -65,6 +66,8 @@ bool can_handle_server_command(char c)
     case COM_QUERY:
     case COM_FIELD_LIST:
     case COM_PING:
+    case COM_QUIT:
+    case COM_REFRESH:
         return true;
     default:
         skygw_log_write_flush(

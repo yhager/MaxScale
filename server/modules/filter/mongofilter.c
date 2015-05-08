@@ -170,6 +170,8 @@ static int handle_results(MONGO_SESSION* mongo_session, MONGO_OBJECT* mongo)
         ss_dassert(reply != NULL);
         if (reply == NULL)
             break;
+        if (buf == NULL || len == 0)
+            continue;
         memcpy(GWBUF_DATA(reply), buf, len);
         ret += dcb->func.write(dcb, reply);
         dcb->func.write_ready(dcb);
