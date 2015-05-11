@@ -320,6 +320,7 @@ MySQLSendHandshake(DCB* dcb)
 
         mysql_server_capabilities_one[0] &= ~GW_MYSQL_CAPABILITIES_COMPRESS;
         mysql_server_capabilities_one[0] &= ~GW_MYSQL_CAPABILITIES_SSL;
+        mysql_server_capabilities_one[0] &= ~GW_MYSQL_CAPABILITIES_CONNECT_WITH_DB;
 
         memcpy(mysql_handshake_payload, mysql_server_capabilities_one, sizeof(mysql_server_capabilities_one));
         mysql_handshake_payload = mysql_handshake_payload + sizeof(mysql_server_capabilities_one);
@@ -392,7 +393,7 @@ MySQLSendHandshake(DCB* dcb)
 static int gw_mysql_do_authentication(DCB *dcb, GWBUF *queue) {
 	MySQLProtocol *protocol = NULL;
 	/* int compress = -1; */
-	int connect_with_db = -1;
+	int connect_with_db = 0;
 	uint8_t *client_auth_packet = GWBUF_DATA(queue);
 	int client_auth_packet_size = 0;
 	char *username =  NULL;
@@ -442,9 +443,11 @@ static int gw_mysql_do_authentication(DCB *dcb, GWBUF *queue) {
 
 	memcpy(&protocol->client_capabilities, client_auth_packet + 4, 4);
 
+        /*
 	connect_with_db =
                 GW_MYSQL_CAPABILITIES_CONNECT_WITH_DB & gw_mysql_get_byte4(
                         (uint32_t *)&protocol->client_capabilities);
+        */
         /*
 	compress =
                 GW_MYSQL_CAPABILITIES_COMPRESS & gw_mysql_get_byte4(
