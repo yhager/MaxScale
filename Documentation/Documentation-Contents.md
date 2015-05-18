@@ -34,13 +34,19 @@
  - [Filter Tutorial](Tutorials/Filter-Tutorial.md)
  - [Galera Cluster Connection Routing Tutorial](Tutorials/Galera-Cluster-Connection-Routing-Tutorial.md)
  - [Galera Cluster Read-Write Splitting Tutorial](Tutorials/Galera-Cluster-Read-Write-Splitting-Tutorial.md)
- - [MaxScale Information Schema Tutorial](Tutorials/MaxScale-Informaton-Schema.md)
+ - [MaxScale Information Schema Tutorial](Tutorials/MaxScale-Information-Schema.md)
  - [MySQL Replication Connection Routing Tutorial](Tutorials/MySQL-Replication-Connection-Routing-Tutorial.md)
  - [MySQL Replication Read-Write Splitting Tutorial](Tutorials/MySQL-Replication-Read-Write-Splitting-Tutorial.md)
  - [MySQL Cluster Setup](Tutorials/MySQL-Cluster-Setup.md)
  - [Replication Proxy with the Binlog Router Tutorial](Tutorials/Replication-Proxy-Binlog-Router-Tutorial.md)
  - [RabbitMQ Setup and MaxScale Integration Tutorial](Tutorials/RabbitMQ-Setup-And-MaxScale-Integration.md)
  - [Nagios Plugins for MaxScale Tutorial](Tutorials/Nagios-Plugins.md)
+
+## Routers
+
+ - [Read Write Split](routers/ReadWriteSplit.md)
+ - [Read Connnection Router](routers/ReadConnRoute.md)
+ - [Schemarouter](routers/SchemaRouter.md)
 
 ## Filters
 
