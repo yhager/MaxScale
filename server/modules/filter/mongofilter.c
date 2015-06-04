@@ -6,9 +6,6 @@
 
 #include <dlfcn.h>
 
-#include "mongofilter.h"
-#include "query_classifier.h"
-
 /* defined in log_manager.cc */
 extern int lm_enabled_logfiles_bitmask;
 extern size_t log_ses_count[];
@@ -26,10 +23,8 @@ typedef struct mongolibrary_object {
     void  (*destroyInstance)(void *instance); /* is this ever called? */
     void* (*createSession)(void* instance, char* db);
     void  (*destroySession)(void *session);
-    void  (*beginQuery)(void* session, char* sql, void* lex);
-    bool  (*getResults)(void* session, unsigned char** data, size_t* len);
-    void  (*endQuery)(void* session);
     void  (*beginServerCommand)(void* session, const void* begin, const void* end);
+    bool  (*getResults)(void* session, unsigned char** data, size_t* len);
     void  (*endServerCommand)(void *session);
 } MONGO_OBJECT;
 
@@ -187,59 +182,16 @@ static int routeQuery(FILTER *instance,
     MONGO_INSTANCE* mongo_instance = (MONGO_INSTANCE*) instance;
     MONGO_SESSION* mongo_session = (MONGO_SESSION*) session;
     MONGO_OBJECT* mongo = (MONGO_OBJECT*) mongo_instance->object;
-    char* sql = modutil_get_SQL(queue);
-    void* lex = NULL;
     int ret = 1;
 
-    if (sql)
-    {
-        if (!query_is_parsed(queue))
-        {
-            if (parse_query(queue))
-            {
-                lex = get_lex(queue);
-                if (can_handle_sql_command(lex))
-                {
-                    mongo->beginQuery(mongo_session->mongo_session, sql, lex);
-                    ret = handle_results(mongo_session, mongo);
-                    mongo->endQuery(mongo_session->mongo_session);
-                }
-                else
-                {
-                    /* NOTE: 'show tables', 'show databases', 'describe
-                       table', 'show create table foo' will all end up in
-                       here */
+    /* $$... This assumes the command uses only a single buffer in
+       GWBUF. We might need to traverse and unite if this is not the
+       case. ...$$ */
+    mongo->beginServerCommand(mongo_session->mongo_session,
+                              queue->start, queue->end);
+    handle_results(mongo_session, mongo);
+    mongo->endServerCommand(mongo_session->mongo_session);
 
-                    /* @todo: do we want to send downstream in this case? */
-                    ret = mongo_session->down.routeQuery(mongo_session->down.instance,
-                                                      mongo_session->down.session, queue);
-                }
-            }
-            else
-            {
-                skygw_log_write_flush(LOGFILE_ERROR,
-                                      "Parsing query failed");
-                ret = 0;
-
-            }
-        }
-        free(sql);
-    }
-    else
-    {
-        /* not an sql. Check the actual protocol to determine the command */
-        char command = GWBUF_DATA_CHAR(queue, 4);
-        if (can_handle_server_command(command))
-        {
-            /* $$... This assumes the command uses only a single buffer in
-               GWBUF. We might need to traverse and unite if this is not the
-               case. ...$$ */
-            mongo->beginServerCommand(mongo_session->mongo_session,
-                                      queue->start, queue->end);
-            handle_results(mongo_session, mongo);
-            mongo->endServerCommand(mongo_session->mongo_session);
-        }
-    }
     return ret;
 }
 

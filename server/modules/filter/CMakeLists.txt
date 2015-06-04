@@ -47,7 +47,7 @@ if(BUILD_TOOLS)
   install(TARGETS ruleparser DESTINATION tools)
 endif()
 
-add_library(mongofilter SHARED mongofilter.c mongofilter.cc)
+add_library(mongofilter SHARED mongofilter.c)
 target_link_libraries(mongofilter log_manager utils query_classifier)
 install(TARGETS mongofilter DESTINATION modules)
 
