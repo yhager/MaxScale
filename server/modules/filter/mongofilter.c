@@ -21,7 +21,7 @@ MODULE_INFO info = {
 typedef struct mongolibrary_object {
     void* (*createInstance)(char *address, int port);
     void  (*destroyInstance)(void *instance); /* is this ever called? */
-    void* (*createSession)(void* instance, char* db);
+    void* (*createSession)(void* instance, char* db, char* user);
     void  (*destroySession)(void *session);
     void  (*beginServerCommand)(void* session, const void* begin, const void* end);
     bool  (*getResults)(void* session, unsigned char** data, size_t* len);
@@ -123,7 +123,7 @@ static void *newSession(FILTER *instance,
         my_session->session = session;
         my_session->mongo_session = my_instance
             ->object
-            ->createSession(my_instance->instance, mysql_session->db);
+            ->createSession(my_instance->instance, mysql_session->db, session_getUser(session));
     }
     return my_session;
 }
